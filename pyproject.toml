@@ -1,0 +1,29 @@
+[project]
+name = "jirawarrior-tui"
+version = "0.1.0"
+description = "Read-only Jira Server/Data Center overview with local unread markers"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Alexey Prudkin"}]
+classifiers = [
+    "Operating System :: MacOS :: MacOS X",
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+]
+dependencies = ["textual==6.6.0", "httpx==0.28.1"]
+
+[project.urls]
+Homepage = "https://github.com/aprudkin/jirawarrior-tui"
+Issues = "https://github.com/aprudkin/jirawarrior-tui/issues"
+
+[project.scripts]
+jira-overview = "jira_overview.__main__:main"
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jira_overview"]

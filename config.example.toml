@@ -1,0 +1,5 @@
+# Synthetic example only: keep the real file outside Git.
+url = "https://jira.example.org/jira"
+token_env = "MY_JIRA_TOKEN"
+refresh_seconds = 60
+# state_dir = "~/.local/state/jira-overview"
