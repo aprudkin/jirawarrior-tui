@@ -445,6 +445,29 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.refresh(app, pilot)
             self.assertEqual(len(self.server.requests), calls)
 
+    async def test_check_command_success_and_failure_never_creates_state(self):
+        import contextlib
+        import io
+        from jira_overview.__main__ import main
+        def run_check():
+            with patch("jira_overview.__main__.configuration", side_effect=lambda _: (
+                    Jira(self.server.url, TOKEN, allow_local_http=True), self.state_dir, 60)), \
+                    patch("sys.argv", ["jira-overview", "--check", "--config", "synthetic.toml"]):
+                return main()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = await asyncio.to_thread(run_check)
+        self.assertEqual(result, 0)
+        self.assertIn("GET-проверка успешна", output.getvalue())
+        self.assertFalse(list(self.state_dir.iterdir()))
+        self.server.status = 500
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            result = await asyncio.to_thread(run_check)
+        self.assertEqual(result, 1)
+        self.assertIn("HTTP 500", errors.getvalue())
+        self.assertFalse(list(self.state_dir.iterdir()))
+
     async def test_cli_requires_tls_and_valid_configuration(self):
         from jira_overview.__main__ import configuration
         with self.assertRaises(OverviewError):

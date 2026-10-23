@@ -388,6 +388,28 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await session.start()
 
+    async def test_browser_timeout_is_a_safe_failure_and_preserves_new_marker(self):
+        async def browser_timeout(url):
+            try:
+                await asyncio.wait_for(asyncio.Event().wait(), timeout=0.01)
+            except TimeoutError:
+                return False
+        session = ReviewSession(Jira(self.server.url, TOKEN, allow_local_http=True),
+                                Path(self.temp.name), 3600, browser_timeout)
+        await session.start()
+        await self.wait_until(lambda: session.view.snapshot is not None)
+        self.server.issues.append({"id": "5", "key": "DEMO-5", "fields": {
+            "summary": "Synthetic task 5", "status": {"name": "In Progress"}, "customfield_123": None},
+            "comments": []})
+        session.refresh()
+        await self.wait_until(lambda: not session.view.refreshing)
+        shown = next(item.issue for item in session.view.items if item.issue.id == "5")
+        session.open(shown)
+        await self.wait_until(lambda: not session.view.opening)
+        self.assertTrue(next(item for item in session.view.items if item.issue.id == "5").new)
+        self.assertIn("Браузер не принял", session.view.open_notice)
+        await session.aclose()
+
     async def test_browser_refusal_preserves_marker_and_close_sends_no_late_invalidation(self):
         notifications = []
         async def refuse(url):
@@ -408,6 +430,27 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         after_close = len(notifications)
         self.assertTrue(session.view.closed)
         self.assertEqual(len(notifications), after_close)
+
+    async def test_browser_completion_before_refresh_keeps_new_comment_unread(self):
+        session = self.make_session()
+        await session.start()
+        await self.wait_until(lambda: session.view.snapshot is not None)
+        shown = session.view.items[0].issue
+        self.server.issues[0]["comments"].append({
+            "id": "99", "author": {"key": "other"}, "created": "2026-01-01T12:00:00Z", "body": "later"})
+        self.server.request_started.clear()
+        self.server.request_release.clear()
+        self.server.request_gate = True
+        session.refresh()
+        self.assertTrue(await asyncio.to_thread(self.server.request_started.wait, 2))
+        session.open(shown)
+        await self.wait_until(lambda: not session.view.opening)
+        self.assertEqual(session.view.items[0].unread_comments, 0)
+        self.server.request_gate = False
+        self.server.request_release.set()
+        await self.wait_until(lambda: not session.view.refreshing)
+        self.assertEqual(session.view.items[0].unread_comments, 1)
+        await session.aclose()
 
     async def test_refresh_failure_is_separate_from_open_and_close_is_idempotent(self):
         session = self.make_session()
@@ -453,6 +496,17 @@ class StartupCleanupTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "synthetic compose/mount failure"):
             run_overview(failed)
         self.assertTrue(failed.session.view.closed)
+
+        class PartiallyStartedApp:
+            def run(self):
+                asyncio.run(self.session.start())
+                raise RuntimeError("synthetic failure after mount start")
+        partial = PartiallyStartedApp()
+        partial.session = ReviewSession(Jira("https://jira.example.invalid", TOKEN), Path("/tmp/unused"),
+                                        60, lambda url: asyncio.sleep(0, result=True))
+        with self.assertRaisesRegex(RuntimeError, "synthetic failure after mount start"):
+            run_overview(partial)
+        self.assertTrue(partial.session.view.closed)
 
         class NormallyClosedApp:
             def run(self):
