@@ -219,6 +219,26 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(list(Path(self.temp.name).glob("*.json")))
         await session.aclose()
 
+    async def test_ingest_write_failure_after_baseline_preserves_view_and_disk(self):
+        session = self.make_session()
+        await session.start()
+        await self.wait_until(lambda: session.view.snapshot is not None)
+        previous_view = session.view
+        state_path = next(Path(self.temp.name).glob("*.json"))
+        previous_state = state_path.read_bytes()
+        self.server.issues[0]["comments"].append({
+            "id": "99", "author": {"key": "other"}, "created": "2026-01-01T12:00:00Z", "body": "synthetic"})
+        from unittest.mock import patch
+        with patch("jira_overview.core.os.replace", side_effect=OSError("synthetic disk failure")):
+            session.refresh()
+            await self.wait_until(lambda: not session.view.refreshing)
+        self.assertIs(session.view.snapshot, previous_view.snapshot)
+        self.assertEqual(session.view.updated_at, previous_view.updated_at)
+        self.assertEqual(session.view.items, previous_view.items)
+        self.assertEqual(state_path.read_bytes(), previous_state)
+        self.assertIn("НЕ сохранены", session.view.refresh_error)
+        await session.aclose()
+
     async def test_acknowledge_write_failure_preserves_disk_and_markers(self):
         session = self.make_session()
         await session.start()
@@ -391,6 +411,37 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("повреждено", corrupted.view.refresh_error)
         self.assertEqual(state_path.read_text(), "synthetic corruption")
         await corrupted.aclose()
+
+    async def test_close_during_initial_load_cancels_without_creating_state(self):
+        session = self.make_session()
+        self.server.request_started.clear()
+        self.server.request_release.clear()
+        self.server.request_gate = True
+        await session.start()
+        self.assertTrue(await asyncio.to_thread(self.server.request_started.wait, 2))
+        await session.aclose()
+        self.server.request_release.set()
+        self.assertIsNone(session.view.snapshot)
+        self.assertTrue(session.view.closed)
+        self.assertFalse(list(Path(self.temp.name).glob("*.json")))
+
+    async def test_close_releases_state_and_jira_exactly_once(self):
+        from unittest.mock import AsyncMock, patch
+        from jira_overview.core import State
+        jira = Jira(self.server.url, TOKEN, allow_local_http=True)
+        original_close = jira.close
+        jira.close = AsyncMock(wraps=original_close)
+        session = ReviewSession(jira, Path(self.temp.name), 3600, self.browser)
+        await session.start()
+        await self.wait_until(lambda: session.view.snapshot is not None)
+        state_close = State.close
+        with patch("jira_overview.session.State.close", autospec=True, wraps=state_close) as close_state:
+            await session.aclose()
+            await session.aclose()
+        jira.close.assert_awaited_once()
+        close_state.assert_called_once()
+        replacement = State(Path(self.temp.name), self.server.url, session.view.user_id)
+        replacement.close()
 
     async def test_close_before_start_is_idempotent_and_rejects_later_start(self):
         session = self.make_session()
