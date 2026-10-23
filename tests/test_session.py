@@ -13,6 +13,8 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         self.server = Server()
         self.temp = tempfile.TemporaryDirectory()
         self.opened = []
+        self.browser_gate = None
+        self.browser_entered = asyncio.Event()
 
     async def asyncTearDown(self):
         await asyncio.to_thread(self.server.close)
@@ -20,6 +22,9 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
 
     async def browser(self, url):
         self.opened.append(url)
+        self.browser_entered.set()
+        if self.browser_gate is not None:
+            await self.browser_gate.wait()
         return True
 
     def make_session(self, changed=None, interval=3600):
@@ -148,10 +153,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_refresh_gate_keeps_last_success_and_open_confirms_only_shown(self):
         session = self.make_session()
         await session.start()
-        for _ in range(200):
-            if session.view.snapshot is not None:
-                break
-            await asyncio.sleep(0.01)
+        await self.wait_until(lambda: session.view.snapshot is not None)
         baseline = session.view
         self.server.issues[0]["comments"].append({
             "id": "99", "author": {"key": "other"}, "created": "2026-01-01T12:00:00Z", "body": "synthetic"})
@@ -161,17 +163,15 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         session.refresh()
         await asyncio.sleep(0.05)
         session.refresh()
-        for _ in range(200):
-            if not session.view.refreshing:
-                break
-            await asyncio.sleep(0.01)
+        await self.wait_until(lambda: not session.view.refreshing)
         self.assertEqual(session.view.snapshot.issues[0].comments, frozenset({"10", "99"}))
         self.assertEqual(len([r for r in self.server.requests if r[1].endswith("/myself")]), 2)
         shown = baseline.items[0].issue
         self.browser_gate = asyncio.Event()
+        self.browser_entered.clear()
         session.open(shown)
         session.open(session.view.items[1].issue)
-        await self.wait_until(lambda: session.view.opening)
+        await asyncio.wait_for(self.browser_entered.wait(), 2)
         self.server.issues[0]["comments"].append({
             "id": "100", "author": {"key": "other"}, "created": "2026-01-01T12:00:00Z", "body": "later"})
         session.refresh()
@@ -288,10 +288,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         session = ReviewSession(Jira(self.server.url, TOKEN, allow_local_http=True),
                                 Path(self.temp.name), 3600, waiting_browser)
         await session.start()
-        for _ in range(200):
-            if session.view.snapshot is not None:
-                break
-            await asyncio.sleep(0.01)
+        await self.wait_until(lambda: session.view.snapshot is not None)
         session.open(session.view.items[0].issue)
         await asyncio.wait_for(entered.wait(), 2)
         self.server.request_started.clear()
@@ -470,28 +467,19 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_refresh_failure_is_separate_from_open_and_close_is_idempotent(self):
         session = self.make_session()
         await session.start()
-        for _ in range(200):
-            if session.view.snapshot is not None:
-                break
-            await asyncio.sleep(0.01)
+        await self.wait_until(lambda: session.view.snapshot is not None)
         old = session.view
         state_path = next(Path(self.temp.name).glob("*.json"))
         previous_state = state_path.read_bytes()
         self.server.status = 503
         session.refresh()
-        for _ in range(200):
-            if not session.view.refreshing:
-                break
-            await asyncio.sleep(0.01)
+        await self.wait_until(lambda: not session.view.refreshing)
         self.assertIs(session.view.snapshot, old.snapshot)
         self.assertEqual(session.view.updated_at, old.updated_at)
         self.assertEqual(state_path.read_bytes(), previous_state)
         self.assertIn("HTTP 503", session.view.refresh_error)
         session.open(old.items[0].issue)
-        for _ in range(200):
-            if not session.view.opening:
-                break
-            await asyncio.sleep(0.01)
+        await self.wait_until(lambda: not session.view.opening)
         self.assertIsNotNone(session.view.refresh_error)
         self.assertEqual(session.view.open_notice.split(".")[0], "Ссылка передана браузеру")
         await session.aclose()
