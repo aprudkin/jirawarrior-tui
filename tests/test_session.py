@@ -26,6 +26,21 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         return ReviewSession(Jira(self.server.url, TOKEN, allow_local_http=True),
                              Path(self.temp.name), interval, self.browser, changed)
 
+    async def test_failed_initial_load_is_not_an_empty_success_and_recovers(self):
+        self.server.status = 500
+        session = self.make_session()
+        await session.start()
+        await self.wait_until(lambda: not session.view.refreshing)
+        self.assertIsNone(session.view.snapshot)
+        self.assertEqual(session.view.items, ())
+        self.assertIn("HTTP 500", session.view.refresh_error)
+        self.assertFalse(list(Path(self.temp.name).glob("*.json")))
+        self.server.status = 200
+        session.refresh()
+        await self.wait_until(lambda: session.view.snapshot is not None)
+        self.assertFalse(any(item.new for item in session.view.items))
+        await session.aclose()
+
     async def test_sprint_membership_stays_a_single_issue_in_session_view(self):
         self.server.issues[0]["fields"]["customfield_123"] = [
             {"id": 1}, "com.atlassian.Sprint@a[id=2,state=ACTIVE,name=legacy]", {"id": 3}]
