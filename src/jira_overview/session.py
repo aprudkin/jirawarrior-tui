@@ -48,6 +48,8 @@ class ReviewSession:
         self._close_task: asyncio.Task | None = None
         self._started = False
         self._closing = False
+        self._refresh_busy = False
+        self._open_busy = False
         self._jira_closed = False
 
     @property
@@ -66,15 +68,17 @@ class ReviewSession:
 
     def refresh(self) -> None:
         self._require_started()
-        if self._closing or self._refresh_task is not None:
+        if self._closing or self._refresh_busy:
             return
+        self._refresh_busy = True
         self._replace_view(refreshing=True)
         self._refresh_task = asyncio.create_task(self._refresh())
 
     def open(self, shown: Issue) -> None:
         self._require_started()
-        if self._closing or self._open_task is not None:
+        if self._closing or self._open_busy:
             return
+        self._open_busy = True
         self._replace_view(opening=True, open_notice=None)
         self._open_task = asyncio.create_task(self._open(shown))
 
@@ -109,6 +113,7 @@ class ReviewSession:
                 self._replace_view(refresh_error=error)
         finally:
             self._refresh_task = None
+            self._refresh_busy = False
             if not self._closing:
                 self._replace_view(refreshing=False)
 
@@ -128,6 +133,7 @@ class ReviewSession:
                 self._replace_view(open_notice=str(exc))
         finally:
             self._open_task = None
+            self._open_busy = False
             if not self._closing:
                 self._replace_view(opening=False)
 
@@ -138,7 +144,7 @@ class ReviewSession:
 
     def _replace_view(self, **changes) -> None:
         self._view = replace(self._view, **changes)
-        if self._on_change is not None:
+        if self._on_change is not None and not self._closing:
             self._on_change()
 
     def _require_started(self) -> None:
@@ -149,6 +155,9 @@ class ReviewSession:
         if self._close_task is None:
             self._closing = True
             self._close_task = asyncio.create_task(self._cleanup())
+        if self._close_task.done():
+            self._close_task.result()
+            return
         cancelled = False
         while not self._close_task.done():
             try:
@@ -173,4 +182,4 @@ class ReviewSession:
         if not self._jira_closed:
             self._jira_closed = True
             await self._jira.close()
-        self._replace_view(refreshing=False, opening=False, closed=True)
+        self._view = replace(self._view, refreshing=False, opening=False, closed=True)

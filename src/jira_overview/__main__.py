@@ -28,6 +28,14 @@ def configuration(path: Path):
         raise OverviewError("Не удалось прочитать конфигурацию Jira TUI. Проверьте TOML: url, token_env, refresh_seconds.") from None
 
 
+def run_overview(app):
+    try:
+        app.run()
+    finally:
+        # Textual may fail before mount/unmount; the session also owns an unstarted client.
+        asyncio.run(app.session.aclose())
+
+
 async def check(jira):
     try:
         snapshot = await jira.snapshot()
@@ -49,7 +57,7 @@ def main():
         if args.check:
             asyncio.run(check(jira))
         else:
-            Overview(jira, state_dir, interval).run()
+            run_overview(Overview(jira, state_dir, interval))
     except OverviewError as error:
         print(str(error), file=sys.stderr)
         return 1

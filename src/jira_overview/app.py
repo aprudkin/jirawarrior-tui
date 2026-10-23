@@ -59,8 +59,8 @@ class Overview(App):
     def __init__(self, jira: Jira, state_dir: Path, interval: float = 60,
                  browser: Callable[[str], Awaitable[bool]] = open_browser):
         super().__init__()
-        self.jira, self.state_dir, self.interval, self.browser = jira, state_dir, interval, browser
         self.session = ReviewSession(jira, state_dir, interval, browser, self.session_changed)
+        self._painted_items = None
 
     def compose(self) -> ComposeResult:
         yield Static("Загрузка Jira…", id="connection", markup=False)
@@ -105,8 +105,9 @@ class Overview(App):
         view = self.session.view
         if view.closed or not self.is_mounted:
             return
-        if view.snapshot is not None:
+        if view.snapshot is not None and self._painted_items != view.items:
             self.paint_snapshot()
+            self._painted_items = view.items
         if view.display_name is not None:
             freshness = (f"УСТАРЕЛО: {view.updated_at} | {view.refresh_error}"
                          if view.refresh_error else f"Обновлено {view.updated_at}")
@@ -114,8 +115,7 @@ class Overview(App):
                 f"{view.display_name} ({plain(view.user_id or '')}) | {freshness}")
         elif view.refresh_error:
             self.query_one("#connection", Static).update(f"НЕТ УСПЕШНОЙ ЗАГРУЗКИ | {view.refresh_error}")
-        if view.open_notice:
-            self.query_one("#notice", Static).update(view.open_notice)
+        self.query_one("#notice", Static).update(view.open_notice or "")
 
     def paint_snapshot(self):
         if not self.session.view.snapshot:
