@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 from pathlib import Path
 import sys
 from typing import Awaitable, Callable
@@ -12,7 +11,8 @@ from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.widgets import DataTable, Footer, Static
 
-from .core import Issue, Jira, OverviewError, Snapshot, State, plain
+from .core import Issue, Jira, plain
+from .session import ReviewSession
 
 
 async def open_browser(url: str) -> bool:
@@ -60,11 +60,7 @@ class Overview(App):
                  browser: Callable[[str], Awaitable[bool]] = open_browser):
         super().__init__()
         self.jira, self.state_dir, self.interval, self.browser = jira, state_dir, interval, browser
-        self.state: State | None = None
-        self.snapshot: Snapshot | None = None
-        self.refreshing = False
-        self.opening = False
-        self.last_success: str | None = None
+        self.session = ReviewSession(jira, state_dir, interval, browser, self.session_changed)
 
     def compose(self) -> ComposeResult:
         yield Static("Загрузка Jira…", id="connection", markup=False)
@@ -81,38 +77,48 @@ class Overview(App):
         for table in self.query(IssueTable):
             table.add_columns("Ключ / метки", "Название", "Статус", "Спринт")
         self.query_one("#sprint", IssueTable).focus()
-        self.set_interval(self.interval, self.action_refresh)
-        self.action_refresh()
+        self.run_worker(self.session.start(), group="session", exit_on_error=False)
+
+    @property
+    def refreshing(self):
+        return self.session.view.refreshing
+
+    @property
+    def opening(self):
+        return self.session.view.opening
+
+    @property
+    def snapshot(self):
+        return self.session.view.snapshot
+
+    def session_changed(self):
+        if self.is_mounted:
+            self.paint_view()
 
     def action_noop(self):
         pass
 
     def action_refresh(self):
-        if not self.refreshing:
-            self.refreshing = True
-            self.run_worker(self.refresh_data(), group="refresh", exit_on_error=False)
+        self.session.refresh()
 
-    async def refresh_data(self):
-        try:
-            snapshot = await self.jira.snapshot()
-            if self.state and self.state.user != snapshot.user_id:
-                raise OverviewError("Учётная запись изменилась; перезапустите приложение для нового профиля.")
-            if self.state is None:
-                self.state = State(self.state_dir, self.jira.url, snapshot.user_id)
-            self.state.ingest(snapshot)
-            self.snapshot = snapshot
-            self.last_success = datetime.now().astimezone().strftime("%H:%M:%S %Z")
+    def paint_view(self):
+        view = self.session.view
+        if view.closed or not self.is_mounted:
+            return
+        if view.snapshot is not None:
             self.paint_snapshot()
+        if view.display_name is not None:
+            freshness = (f"УСТАРЕЛО: {view.updated_at} | {view.refresh_error}"
+                         if view.refresh_error else f"Обновлено {view.updated_at}")
             self.query_one("#connection", Static).update(
-                f"{snapshot.display_name} ({plain(snapshot.user_id)}) | Обновлено {self.last_success}")
-        except OverviewError as error:
-            freshness = f"УСТАРЕЛО: {self.last_success}" if self.last_success else "НЕТ УСПЕШНОЙ ЗАГРУЗКИ"
-            self.query_one("#connection", Static).update(f"{freshness} | {error}")
-        finally:
-            self.refreshing = False
+                f"{view.display_name} ({plain(view.user_id or '')}) | {freshness}")
+        elif view.refresh_error:
+            self.query_one("#connection", Static).update(f"НЕТ УСПЕШНОЙ ЗАГРУЗКИ | {view.refresh_error}")
+        if view.open_notice:
+            self.query_one("#notice", Static).update(view.open_notice)
 
     def paint_snapshot(self):
-        if not self.snapshot or not self.state:
+        if not self.session.view.snapshot:
             return
         tables = list(self.query(IssueTable))
         focused = self.focused if isinstance(self.focused, IssueTable) else None
@@ -122,7 +128,8 @@ class Overview(App):
         for table in tables:
             old_row = table.cursor_row
             old_key = list(table.shown)[old_row] if table.row_count else None
-            issues = [i for i in self.snapshot.issues if bool(i.sprints) == (table.id == "sprint")]
+            issues = [item.issue for item in self.session.view.items
+                      if bool(item.issue.sprints) == (table.id == "sprint")]
             table.clear()
             table.shown = {i.id: i for i in issues}
             names = sorted({name for i in issues for name in i.sprints})
@@ -131,8 +138,9 @@ class Overview(App):
                 f"{title} ({len(issues)})" + (" — " + "; ".join(names) if names else "") +
                 (" — нет задач" if not issues else ""))
             for issue in issues:
-                new, count = self.state.markers(issue)
-                marker = (" NEW" if new else "") + (f" +{count} комм." if count else "")
+                item = next(item for item in self.session.view.items if item.issue.id == issue.id)
+                marker = (" NEW" if item.new else "") + (
+                    f" +{item.unread_comments} комм." if item.unread_comments else "")
                 table.add_row(Text(issue.key + marker), Text(issue.summary), Text(issue.status),
                               Text("; ".join(issue.sprints)), key=issue.id)
             keys = list(table.shown)
@@ -143,25 +151,8 @@ class Overview(App):
 
     def on_data_table_row_selected(self, event: IssueTable.RowSelected):
         shown = event.shown
-        if shown is not None and not self.opening:
-            self.opening = True
-            self.run_worker(self.open_issue(shown), group="browser", exit_on_error=False)
-
-    async def open_issue(self, shown: Issue):
-        try:
-            if not await self.browser(self.jira.browser_url(shown)):
-                raise OverviewError("Браузер не принял ссылку; отметки сохранены.")
-            assert self.state is not None
-            self.state.acknowledge(shown)
-            self.paint_snapshot()
-            self.query_one("#notice", Static).update(
-                "Ссылка передана браузеру. Отмечен только показанный снимок, не чтение страницы.")
-        except OverviewError as error:
-            self.query_one("#notice", Static).update(str(error))
-        finally:
-            self.opening = False
+        if shown is not None:
+            self.session.open(shown)
 
     async def on_unmount(self):
-        if self.state:
-            self.state.close()
-        await self.jira.close()
+        await self.session.aclose()

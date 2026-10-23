@@ -336,15 +336,16 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
         async with self.running() as (app, pilot):
             self.server.issues[0]["comments"].append(comment(12))
             await self.refresh(app, pilot)
-            before = app.state.path.read_bytes()
+            state_path = next(self.state_dir.glob("*.json"))
+            before = state_path.read_bytes()
             self.server.partial = True
             await self.refresh(app, pilot)
-            self.assertEqual(app.state.path.read_bytes(), before)
+            self.assertEqual(state_path.read_bytes(), before)
             self.assertIn("+1 комм.", self.visible(app))
 
     async def test_corruption_second_instance_and_save_failure(self):
         async with self.running() as (app, pilot):
-            state_path = app.state.path
+            state_path = next(self.state_dir.glob("*.json"))
             second = self.make_app()
             async with second.run_test() as second_pilot:
                 await self.settled(second, second_pilot)
@@ -470,7 +471,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             other = State(self.state_dir, "https://other.example.org", app.snapshot.user_id)
             try:
                 self.assertFalse(other.data["baseline"])
-                self.assertNotEqual(other.path, app.state.path)
+                self.assertNotEqual(other.path, next(self.state_dir.glob("*.json")))
             finally:
                 other.close()
             self.server.status = 429
