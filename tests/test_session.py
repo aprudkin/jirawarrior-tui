@@ -77,7 +77,11 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         item = next(item for item in session.view.items if item.issue.id == "4")
         self.assertTrue(item.new)
         self.assertEqual(item.unread_comments, 1)
-        self.server.issues[-1]["comments"][0]["body"] = "edited known comment"
+        self.server.issues[-1]["comments"][2]["body"] = "edited known comment"
+        session.refresh()
+        await self.wait_until(lambda: not session.view.refreshing)
+        item = next(item for item in session.view.items if item.issue.id == "4")
+        self.assertEqual(item.unread_comments, 1)
         self.server.issues[-1]["fields"]["status"]["name"] = "Review"
         self.server.issues[-1]["comments"].pop(0)
         self.server.issues[-1]["comments"].append({
@@ -110,6 +114,27 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_until(lambda: not session.view.refreshing)
         item = next(item for item in session.view.items if item.issue.id == "4")
         self.assertFalse(item.new)
+        self.assertEqual(item.unread_comments, 0)
+        await session.aclose()
+
+    async def test_restart_preserves_pending_new_marker(self):
+        session = self.make_session()
+        await session.start()
+        await self.wait_until(lambda: session.view.snapshot is not None)
+        self.server.issues.append({"id": "4", "key": "DEMO-4", "fields": {
+            "summary": "Synthetic task 4", "status": {"name": "In Progress"}, "customfield_123": None},
+            "comments": []})
+        session.refresh()
+        await self.wait_until(lambda: not session.view.refreshing)
+        item = next(item for item in session.view.items if item.issue.id == "4")
+        self.assertTrue(item.new)
+        await session.aclose()
+
+        session = self.make_session()
+        await session.start()
+        await self.wait_until(lambda: session.view.snapshot is not None)
+        item = next(item for item in session.view.items if item.issue.id == "4")
+        self.assertTrue(item.new)
         self.assertEqual(item.unread_comments, 0)
         await session.aclose()
 
