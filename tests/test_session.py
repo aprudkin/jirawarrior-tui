@@ -557,7 +557,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         session.open(old.items[0].issue)
         await self.wait_until(lambda: not session.view.opening)
         self.assertIsNotNone(session.view.refresh_error)
-        self.assertEqual(session.view.open_notice.split(".")[0], "Ссылка передана браузеру")
+        self.assertIsNone(session.view.open_notice)
         await session.aclose()
         await session.aclose()
         self.assertTrue(session.view.closed)

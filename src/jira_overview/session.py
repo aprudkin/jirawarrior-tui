@@ -126,8 +126,7 @@ class ReviewSession:
             if self._state is None:
                 raise OverviewError("Локальное состояние недоступно; отметки НЕ сохранены.")
             self._state.acknowledge(shown)
-            self._replace_view(items=self._items(), open_notice=(
-                "Ссылка передана браузеру. Отмечен только показанный снимок, не чтение страницы."))
+            self._replace_view(items=self._items())
         except OverviewError as exc:
             if not self._closing:
                 self._replace_view(open_notice=str(exc))

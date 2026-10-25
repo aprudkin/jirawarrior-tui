@@ -237,10 +237,12 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await self.settled(app, pilot)
             self.assert_row_highlight(app, "other", 1, new=True, unread=1)
+            self.assertIn("Браузер не принял", self.notice(app))
             self.browser_ok = True
             await pilot.press("enter")
             await self.settled(app, pilot)
             self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-4")
+            self.assertEqual(self.notice(app), "")
             self.assert_row_highlight(app, "other", 1)
             await self.refresh(app, pilot)
             self.assert_row_highlight(app, "other", 1)
@@ -495,10 +497,12 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.settled(app, pilot)
             self.assertEqual(self.opened, [self.server.url + "/browse/DEMO-1"])
             self.assertNotIn("комм.", self.visible(app))
+            self.assertEqual(self.notice(app), "")
             await pilot.click("#other", offset=(5, 2))
             await self.settled(app, pilot)
             self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-2")
             self.assertEqual(len(self.opened), 2)
+            self.assertEqual(self.notice(app), "")
 
     async def test_browser_race_acknowledges_only_displayed_snapshot(self):
         async with self.running() as (app, pilot):
