@@ -10,9 +10,25 @@ from typing import Awaitable, Callable
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
+from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Footer, Static
 
 from .core import Issue, Jira, OverviewError, Snapshot, State, plain
+
+
+_STATUS_PRIORITIES = (
+    frozenset(("in progress", "в работе")),
+    frozenset(("to do", "к выполнению")),
+    frozenset(("hold", "on hold")),
+    frozenset(("backlog", "бэклог")),
+)
+
+
+def _status_sort_key(status: str) -> tuple[int, str, str]:
+    folded = status.casefold()
+    rank = next((index for index, names in enumerate(_STATUS_PRIORITIES)
+                 if folded in names), len(_STATUS_PRIORITIES))
+    return rank, folded, status
 
 
 async def open_browser(url: str) -> bool:
@@ -31,7 +47,7 @@ async def open_browser(url: str) -> bool:
 
 
 class IssueTable(DataTable):
-    """Capture the displayed issue at event creation, not after an async refresh."""
+    """Capture displayed issues and navigate among issue rows, skipping headings."""
     def post_message(self, message):
         if isinstance(message, DataTable.RowSelected):
             message.shown = self.shown.get(message.row_key.value)
@@ -40,6 +56,52 @@ class IssueTable(DataTable):
     def __init__(self, **kwargs):
         super().__init__(cursor_type="row", zebra_stripes=True, **kwargs)
         self.shown: dict[str, Issue] = {}
+
+    def _key_at(self, row: int) -> str:
+        return self.coordinate_to_cell_key(Coordinate(row, 0)).row_key.value
+
+    def _issue_rows(self) -> list[int]:
+        return [row for row in range(self.row_count) if self._key_at(row) in self.shown]
+
+    def _move_issue_cursor(self, direction: int, *, page: bool = False, edge: bool = False):
+        rows = self._issue_rows()
+        if not rows:
+            return
+        if edge:
+            target = rows[0] if direction < 0 else rows[-1]
+        else:
+            current = self.cursor_row
+            if current in rows:
+                index = rows.index(current) + direction
+            else:
+                candidates = [index for index, row in enumerate(rows)
+                              if row < current] if direction < 0 else [
+                                  index for index, row in enumerate(rows) if row > current]
+                if not candidates:
+                    return
+                index = candidates[-1] if direction < 0 else candidates[0]
+            if page:
+                index += direction * max(0, self.size.height - 3)
+            target = rows[min(max(index, 0), len(rows) - 1)]
+        self.move_cursor(row=target)
+
+    def action_cursor_up(self):
+        self._move_issue_cursor(-1)
+
+    def action_cursor_down(self):
+        self._move_issue_cursor(1)
+
+    def action_page_up(self):
+        self._move_issue_cursor(-1, page=True)
+
+    def action_page_down(self):
+        self._move_issue_cursor(1, page=True)
+
+    def action_scroll_top(self):
+        self._move_issue_cursor(-1, edge=True)
+
+    def action_scroll_bottom(self):
+        self._move_issue_cursor(1, edge=True)
 
 
 class Overview(App):
@@ -53,8 +115,7 @@ class Overview(App):
     Footer { height: 1; }
     """
     BINDINGS = [("q", "quit", "Выход"), ("r", "refresh", "Обновить"),
-                ("tab", "focus_next", "Область"), ("enter", "noop", "Открыть"),
-                ("up,down", "noop", "↑↓ выбор")]
+                ("tab", "focus_next", "Область"), ("enter", "noop", "Открыть")]
 
     def __init__(self, jira: Jira, state_dir: Path, interval: float = 60,
                  browser: Callable[[str], Awaitable[bool]] = open_browser):
@@ -118,11 +179,19 @@ class Overview(App):
         focused = self.focused if isinstance(self.focused, IssueTable) else None
         selected = None
         if focused and focused.row_count:
-            selected = list(focused.shown)[focused.cursor_row]
+            selected = focused._key_at(focused.cursor_row)
+            if selected not in focused.shown:
+                selected = None
         for table in tables:
             old_row = table.cursor_row
-            old_key = list(table.shown)[old_row] if table.row_count else None
+            old_cursor_key = table._key_at(old_row) if table.row_count else None
+            old_key = old_cursor_key if old_cursor_key in table.shown else None
+            old_issue_index = sum(
+                table._key_at(row) in table.shown for row in range(old_row))
             issues = [i for i in self.snapshot.issues if bool(i.sprints) == (table.id == "sprint")]
+            grouped: dict[str, list[Issue]] = {}
+            for issue in issues:
+                grouped.setdefault(issue.status, []).append(issue)
             table.clear()
             table.shown = {i.id: i for i in issues}
             names = sorted({name for i in issues for name in i.sprints})
@@ -130,15 +199,26 @@ class Overview(App):
             self.query_one(f"#{table.id}-heading", Static).update(
                 f"{title} ({len(issues)})" + (" — " + "; ".join(names) if names else "") +
                 (" — нет задач" if not issues else ""))
-            for issue in issues:
-                new, count = self.state.markers(issue)
-                marker = (" NEW" if new else "") + (f" +{count} комм." if count else "")
-                table.add_row(Text(issue.key + marker), Text(issue.summary), Text(issue.status),
-                              Text("; ".join(issue.sprints)), key=issue.id)
-            keys = list(table.shown)
-            target = selected if selected in keys else old_key
-            table.move_cursor(row=keys.index(target) if target in keys else min(old_row, max(0, len(keys) - 1)))
-            if selected in keys:
+            for status in sorted(grouped, key=_status_sort_key):
+                members = grouped[status]
+                table.add_row("", Text(f"{status} ({len(members)})", style="bold"), "", "",
+                              key="status:" + status)
+                for issue in members:
+                    new, count = self.state.markers(issue)
+                    marker = (" NEW" if new else "") + (f" +{count} комм." if count else "")
+                    table.add_row(Text(issue.key + marker), Text(issue.summary), Text(issue.status),
+                                  Text("; ".join(issue.sprints)), key=issue.id)
+            row_by_key = {table._key_at(row): row for row in range(table.row_count)
+                          if table._key_at(row) in table.shown}
+            target = selected if selected in row_by_key else old_key
+            if target in row_by_key:
+                table.move_cursor(row=row_by_key[target])
+            elif row_by_key:
+                nearest_index = min(old_issue_index, len(row_by_key) - 1)
+                table.move_cursor(row=list(row_by_key.values())[nearest_index])
+            else:
+                table.move_cursor(row=0)
+            if selected in row_by_key:
                 table.focus()
 
     def on_data_table_row_selected(self, event: IssueTable.RowSelected):
