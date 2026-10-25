@@ -47,7 +47,7 @@ async def open_browser(url: str) -> bool:
 
 
 class IssueTable(DataTable):
-    """Capture displayed issues and navigate among issue rows, skipping headings."""
+    """Capture displayed issues and navigate among issue rows, skipping separators."""
     def post_message(self, message):
         if isinstance(message, DataTable.RowSelected):
             message.shown = self.shown.get(message.row_key.value)
@@ -211,8 +211,7 @@ class Overview(App):
             items_by_id = {item.issue.id: item for item in self.session.view.items}
             for status in sorted(grouped, key=_status_sort_key):
                 members = grouped[status]
-                table.add_row("", Text(f"{status} ({len(members)})", style="bold"), "", "",
-                              key="status:" + status)
+                table.add_row("", "", "", "", key="status:" + status)
                 for issue in members:
                     item = items_by_id[issue.id]
                     emphasis = "bold" if item.new or item.unread_comments else ""
