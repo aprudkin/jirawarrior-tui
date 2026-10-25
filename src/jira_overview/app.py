@@ -38,7 +38,9 @@ class IssueTable(DataTable):
         return super().post_message(message)
 
     def __init__(self, **kwargs):
-        super().__init__(cursor_type="row", zebra_stripes=True, **kwargs)
+        # Keep marker colors on the cursor row without replacing its background.
+        super().__init__(cursor_type="row", zebra_stripes=True,
+                         cursor_foreground_priority="renderable", **kwargs)
         self.shown: dict[str, Issue] = {}
 
 
@@ -139,9 +141,13 @@ class Overview(App):
                 (" — нет задач" if not issues else ""))
             for issue in issues:
                 item = next(item for item in self.session.view.items if item.issue.id == issue.id)
-                marker = (" NEW" if item.new else "") + (
-                    f" +{item.unread_comments} комм." if item.unread_comments else "")
-                table.add_row(Text(issue.key + marker), Text(issue.summary), Text(issue.status),
+                emphasis = "bold" if item.new or item.unread_comments else ""
+                key = Text(issue.key, style=emphasis)
+                if item.new:
+                    key.append(" NEW", style="bold green")
+                if item.unread_comments:
+                    key.append(f" +{item.unread_comments} комм.", style="bold yellow")
+                table.add_row(key, Text(issue.summary, style=emphasis), Text(issue.status),
                               Text("; ".join(issue.sprints)), key=issue.id)
             keys = list(table.shown)
             target = selected if selected in keys else old_key

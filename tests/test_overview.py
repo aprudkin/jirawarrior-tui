@@ -14,6 +14,8 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
+from rich.color import Color
+from rich.text import Text
 from textual.widgets import Static
 
 from jira_overview.app import IssueTable, Overview
@@ -187,6 +189,91 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
 
     def notice(self, app):
         return str(app.query_one("#notice", Static).render())
+
+    def assert_row_highlight(self, app, table_id, row_index, *, new=False, unread=0):
+        table = app.query_one("#" + table_id, IssueTable)
+        key, summary, status, sprint = table.get_row_at(row_index)
+        marker = (" NEW" if new else "") + (f" +{unread} комм." if unread else "")
+        self.assertEqual(key.plain, key.plain.split()[0] + marker)
+        for text in (key, summary):
+            self.assertEqual(bool(text.get_style_at_offset(app.console, 0).bold), bool(new or unread))
+        for text in (status, sprint):
+            self.assertFalse(text.get_style_at_offset(app.console, 0).bold)
+        for label, color in (("NEW", "green"), (f"+{unread} комм.", "yellow")):
+            if label in key.plain:
+                start = key.plain.index(label)
+                for offset in range(start, start + len(label)):
+                    style = key.get_style_at_offset(app.console, offset)
+                    self.assertTrue(style.bold)
+                    self.assertEqual(style.color, Color.parse(color))
+
+    async def test_highlight_combinations_refresh_open_and_restart(self):
+        async with self.running() as (app, pilot):
+            self.assert_row_highlight(app, "sprint", 0)
+            self.assert_row_highlight(app, "other", 0)
+            self.server.issues.extend([issue(3, [{"id": 1}]), issue(4)])
+            await self.refresh(app, pilot)
+            self.server.issues[0]["comments"].append(comment(12))
+            self.server.issues[-1]["comments"].append(comment(41))
+            await self.refresh(app, pilot)
+            expected = [("sprint", 0, False, 1), ("sprint", 1, True, 0),
+                        ("other", 0, False, 0), ("other", 1, True, 1)]
+            for _ in range(2):
+                for table_id, row_index, new, unread in expected:
+                    with self.subTest(table=table_id, row=row_index):
+                        self.assert_row_highlight(app, table_id, row_index, new=new, unread=unread)
+                self.assertEqual([row[0].split()[0] for row in self.rows(app, "sprint")],
+                                 ["DEMO-1", "DEMO-3"])
+                self.assertEqual([row[0].split()[0] for row in self.rows(app, "other")],
+                                 ["DEMO-2", "DEMO-4"])
+                await self.refresh(app, pilot)
+            await pilot.press("tab", "down")
+            self.browser_ok = False
+            await pilot.press("enter")
+            await self.settled(app, pilot)
+            self.assert_row_highlight(app, "other", 1, new=True, unread=1)
+            self.browser_ok = True
+            await pilot.press("enter")
+            await self.settled(app, pilot)
+            self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-4")
+            self.assert_row_highlight(app, "other", 1)
+            await self.refresh(app, pilot)
+            self.assert_row_highlight(app, "other", 1)
+        async with self.running() as (app, pilot):
+            self.assert_row_highlight(app, "sprint", 0, unread=1)
+            self.assert_row_highlight(app, "sprint", 1, new=True)
+            self.assert_row_highlight(app, "other", 0)
+            self.assert_row_highlight(app, "other", 1)
+
+    async def test_marker_colors_survive_cursor_and_focus(self):
+        async with self.running() as (app, pilot):
+            self.server.issues.append(issue(4))
+            await self.refresh(app, pilot)
+            self.server.issues[-1]["comments"].append(comment(41))
+            await self.refresh(app, pilot)
+            await pilot.press("tab", "down")
+            table = app.query_one("#other", IssueTable)
+            self.assertEqual(table.cursor_row, 1)
+            for focused in (True, False):
+                with self.subTest(focused=focused):
+                    if not focused:
+                        await pilot.press("tab")
+                    self.assertEqual(table.has_focus, focused)
+                    rendered = Text.assemble(*[(segment.text, segment.style) for segment in
+                                              table.render_line(table.header_height + table.cursor_row)])
+                    self.assertIn("DEMO-4 NEW +1 комм.", rendered.plain)
+                    for label, color in (("NEW", "green"), ("+1 комм.", "yellow")):
+                        start = rendered.plain.index(label)
+                        for offset in range(start, start + len(label)):
+                            style = rendered.get_style_at_offset(app.console, offset)
+                            self.assertTrue(style.bold)
+                            self.assertEqual(style.color, Color.parse(color))
+                    if focused:
+                        style = rendered.get_style_at_offset(app.console, rendered.plain.index("DEMO-4"))
+                        self.assertEqual(style.bgcolor,
+                                         table.get_component_rich_style("datatable--cursor").bgcolor)
+            self.assertFalse(self.opened)
+            self.assert_row_highlight(app, "other", 1, new=True, unread=1)
 
     async def test_baseline_pagination_regions_and_read_only(self):
         self.server.issues[0]["comments"] = [comment(1), comment(2), comment(3)]
