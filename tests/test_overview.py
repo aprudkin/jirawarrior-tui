@@ -417,6 +417,8 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("\x1b", str(self.rows(app, "sprint")))
             self.assertNotIn("\u202e", str(self.rows(app, "sprint")))
             self.assertIn("[bold]", str(self.rows(app, "sprint")))
+            # Snapshot acceptance precedes the DataTable idle pass that measures columns.
+            await pilot.pause()
             screenshot = ElementTree.fromstring(app.export_screenshot())
             visible_text = " ".join("".join(screenshot.itertext()).split())
             self.assertIn("DEMO-1", visible_text)
