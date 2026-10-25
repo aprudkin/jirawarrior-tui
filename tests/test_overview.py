@@ -348,7 +348,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             sprint = self.rows(app, "sprint")
             other = self.rows(app, "other")
             self.assertEqual([r[0] or r[1] for r in sprint], [
-                "", "DEMO-2", "", "DEMO-1",
+                "DEMO-2", "DEMO-1",
             ])
             self.assertEqual([r[0] or r[1] for r in other], [
                 "", "DEMO-14 NEW", "OTHER-15 NEW", "", "DEMO-12",
@@ -365,24 +365,65 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                               "К выполнению", "к выполнению", "Hold", "On Hold",
                               "Backlog", "Бэклог", "Review", "review"])
 
-    async def test_single_status_group_has_one_blank_leading_row_in_each_area(self):
+    async def test_single_status_group_is_compact_only_in_sprint(self):
         async with self.running() as (app, pilot):
             for _ in range(2):
+                await pilot.pause()
                 for area, key in (("sprint", "DEMO-1"), ("other", "DEMO-2")):
                     with self.subTest(area=area):
                         table = app.query_one("#" + area, IssueTable)
                         rows = self.rows(app, area)
-                        self.assertEqual(len(rows), 2)
-                        self.assertEqual(rows[0], ["", "", "", ""])
-                        self.assertEqual(rows[1][0], key)
-                        self.assertEqual(rows[1][2], "In Progress")
-                        self.assertEqual(table.cursor_row, 1)
+                        leading_rows = 0 if area == "sprint" else 1
+                        self.assertEqual(len(rows), leading_rows + 1)
+                        if leading_rows:
+                            self.assertEqual(rows[0], ["", "", "", ""])
+                        self.assertEqual(rows[leading_rows][0], key)
+                        self.assertEqual(rows[leading_rows][2], "In Progress")
+                        self.assertEqual(table.cursor_row, leading_rows)
                         rendered = "".join(segment.text for segment in
                                            table.render_line(table.header_height))
-                        self.assertEqual(rendered.strip(), "")
+                        if area == "sprint":
+                            self.assertIn(key, rendered)
+                        else:
+                            self.assertEqual(rendered.strip(), "")
                         heading = str(app.query_one("#" + area + "-heading", Static).render())
                         self.assertIn("(1)", heading)
                 await self.refresh(app, pilot)
+
+    async def test_compact_sprint_rows_render_and_navigate_without_gaps(self):
+        self.server.issues = [issue(i, [{"id": 1}]) for i in range(1, 7)]
+        for item, status in zip(self.server.issues,
+                                ["In Progress", "On Hold", "On Hold", "Backlog",
+                                 "Verifying", "Verifying"]):
+            item["fields"]["status"]["name"] = status
+        async with self.running() as (app, pilot):
+            table = app.query_one("#sprint", IssueTable)
+            expected = [f"DEMO-{i}" for i in range(1, 7)]
+            await pilot.pause()
+            self.assertEqual(table.row_count, len(expected))
+            self.assertEqual([row[0] for row in self.rows(app, "sprint")], expected)
+            for index, key in enumerate(expected):
+                rendered = "".join(segment.text for segment in
+                                   table.render_line(table.header_height + index))
+                self.assertIn(key, rendered)
+                self.assertEqual(table.cursor_row, index)
+                await pilot.press("down")
+            await pilot.press("ctrl+home", "down", "down", "down")
+            self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, "DEMO-4")
+            self.server.issues[3]["fields"]["status"]["name"] = "In Progress"
+            self.server.issues[3]["comments"].append(comment(41))
+            await self.refresh(app, pilot)
+            self.assertEqual(table.row_count, len(expected))
+            self.assertEqual(table.cursor_row, 1)
+            self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, "DEMO-4 +1 комм.")
+            self.assert_row_highlight(app, "sprint", 1, unread=1)
+            await pilot.press("enter")
+            await self.settled(app, pilot)
+            self.assertEqual(self.opened, [self.server.url + "/browse/DEMO-4"])
+            await pilot.press("ctrl+home")
+            await pilot.click("#sprint", offset=(5, table.header_height))
+            await self.settled(app, pilot)
+            self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-1")
 
     async def test_baseline_pagination_regions_and_read_only(self):
         self.server.issues[0]["comments"] = [comment(1), comment(2), comment(3)]
@@ -446,7 +487,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("\x1b", str(self.rows(app, "sprint")))
             self.assertNotIn("\u202e", str(self.rows(app, "sprint")))
             self.assertIn("[bold]", str(self.rows(app, "sprint")))
-            self.assertEqual(self.rows(app, "sprint")[0], ["", "", "", ""])
+            self.assertEqual(self.rows(app, "sprint")[0][0], "DEMO-1")
             # Snapshot acceptance precedes the DataTable idle pass that measures columns.
             await pilot.pause()
             screenshot = ElementTree.fromstring(app.export_screenshot())

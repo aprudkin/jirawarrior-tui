@@ -211,7 +211,8 @@ class Overview(App):
             items_by_id = {item.issue.id: item for item in self.session.view.items}
             for status in sorted(grouped, key=_status_sort_key):
                 members = grouped[status]
-                table.add_row("", "", "", "", key="status:" + status)
+                if table.id != "sprint":
+                    table.add_row("", "", "", "", key="status:" + status)
                 for issue in members:
                     item = items_by_id[issue.id]
                     emphasis = "bold" if item.new or item.unread_comments else ""
