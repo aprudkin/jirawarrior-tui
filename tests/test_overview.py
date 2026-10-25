@@ -307,8 +307,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.server.issues[-1]["fields"]["status"]["name"] = "In Progress"
             await self.refresh(app, pilot)
             self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, "DEMO-3 NEW +1 комм.")
-            self.assertEqual([row for row in self.rows(app, "other") if not row[2]],
-                             [["", "", "", ""], ["", "", "", ""]])
+            self.assertTrue(all(row[2] for row in self.rows(app, "other")))
             self.assert_row_highlight(app, "other", 0, new=True, unread=1)
             await pilot.press("enter")
             await self.settled(app, pilot)
@@ -350,22 +349,19 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([r[0] or r[1] for r in sprint], [
                 "DEMO-2", "DEMO-1",
             ])
-            self.assertEqual([r[0] or r[1] for r in other], [
-                "", "DEMO-14 NEW", "OTHER-15 NEW", "", "DEMO-12",
-                "", "DEMO-10", "", "DEMO-3", "", "DEMO-11", "", "DEMO-13",
-                "", "DEMO-4", "", "DEMO-5", "", "DEMO-6", "", "DEMO-7",
-                "", "DEMO-8", "", "DEMO-9",
+            self.assertEqual([r[0] for r in other], [
+                "DEMO-14 NEW", "OTHER-15 NEW", "DEMO-12", "DEMO-10", "DEMO-3",
+                "DEMO-11", "DEMO-13", "DEMO-4", "DEMO-5", "DEMO-6", "DEMO-7",
+                "DEMO-8", "DEMO-9",
             ])
             for rows in (sprint, other):
-                for row in rows:
-                    if not row[2]:
-                        self.assertEqual(row, ["", "", "", ""])
+                self.assertTrue(all(row[2] for row in rows))
             self.assertEqual([r[2] for r in other if r[0].startswith(("DEMO-", "OTHER-"))],
                              ["In Progress", "In Progress", "in progress", "В работе", "To Do",
                               "К выполнению", "к выполнению", "Hold", "On Hold",
                               "Backlog", "Бэклог", "Review", "review"])
 
-    async def test_single_status_group_is_compact_only_in_sprint(self):
+    async def test_single_status_group_is_compact_in_both_areas(self):
         async with self.running() as (app, pilot):
             for _ in range(2):
                 await pilot.pause()
@@ -373,19 +369,13 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                     with self.subTest(area=area):
                         table = app.query_one("#" + area, IssueTable)
                         rows = self.rows(app, area)
-                        leading_rows = 0 if area == "sprint" else 1
-                        self.assertEqual(len(rows), leading_rows + 1)
-                        if leading_rows:
-                            self.assertEqual(rows[0], ["", "", "", ""])
-                        self.assertEqual(rows[leading_rows][0], key)
-                        self.assertEqual(rows[leading_rows][2], "In Progress")
-                        self.assertEqual(table.cursor_row, leading_rows)
+                        self.assertEqual(len(rows), 1)
+                        self.assertEqual(rows[0][0], key)
+                        self.assertEqual(rows[0][2], "In Progress")
+                        self.assertEqual(table.cursor_row, 0)
                         rendered = "".join(segment.text for segment in
                                            table.render_line(table.header_height))
-                        if area == "sprint":
-                            self.assertIn(key, rendered)
-                        else:
-                            self.assertEqual(rendered.strip(), "")
+                        self.assertIn(key, rendered)
                         heading = str(app.query_one("#" + area + "-heading", Static).render())
                         self.assertIn("(1)", heading)
                 await self.refresh(app, pilot)
@@ -454,7 +444,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.server.issues[0]["fields"]["customfield_123"] = None
             await self.refresh(app, pilot)
             self.assertEqual(len(self.rows(app, "sprint")), 0)
-            self.assertEqual(len(self.rows(app, "other")), 3)
+            self.assertEqual(len(self.rows(app, "other")), 2)
             self.assertNotIn("NEW", self.visible(app))
             self.assertEqual(app.focused.id, "other")
             await pilot.press("enter")
@@ -497,7 +487,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.resize_terminal(160, 45)
             await pilot.resize_terminal(45, 16)
 
-    async def test_keyboard_skips_blank_separators_and_mouse_separator_never_opens(self):
+    async def test_compact_other_rows_render_navigate_and_ignore_clicks_outside_issues(self):
         self.server.issues = [issue(i) for i in range(1, 8)]
         for item, status in zip(self.server.issues,
                                 ["In Progress", "To Do", "Hold", "Backlog", "Open", "Review", "Zulu"]):
@@ -505,40 +495,40 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
         async with self.running() as (app, pilot):
             table = app.query_one("#other", IssueTable)
             await pilot.press("tab", "ctrl+home")
-            self.assertTrue(table.get_row_at(table.cursor_row)[2])
-            first = table.get_row_at(table.cursor_row)[0].plain
+            expected = [f"DEMO-{i}" for i in range(1, 8)]
+            self.assertEqual(table.row_count, len(expected))
+            self.assertEqual([row[0] for row in self.rows(app, "other")], expected)
+            for index, key in enumerate(expected):
+                rendered = "".join(segment.text for segment in
+                                   table.render_line(table.header_height + index))
+                self.assertIn(key, rendered)
+            self.assertEqual(table.cursor_row, 0)
             await pilot.press("down")
-            self.assertTrue(table.get_row_at(table.cursor_row)[2])
-            self.assertNotEqual(table.get_row_at(table.cursor_row)[0].plain, first)
+            self.assertEqual(table.cursor_row, 1)
+            await pilot.press("up")
+            self.assertEqual(table.cursor_row, 0)
             await pilot.press("pagedown")
-            self.assertTrue(table.get_row_at(table.cursor_row)[2])
+            self.assertEqual(table.cursor_row, len(expected) - 1)
             await pilot.press("pageup")
-            self.assertTrue(table.get_row_at(table.cursor_row)[2])
-            await pilot.press("ctrl+end")
-            self.assertTrue(table.get_row_at(table.cursor_row)[2])
-            last = table.get_row_at(table.cursor_row)[0].plain.split()[0]
-            await pilot.press("enter")
+            self.assertEqual(table.cursor_row, 0)
+            await pilot.press("ctrl+end", "enter")
             await self.settled(app, pilot)
-            self.assertEqual(self.opened[-1], self.server.url + "/browse/" + last)
+            self.assertEqual(self.opened, [self.server.url + "/browse/DEMO-7"])
             self.server.issues[0]["comments"].append(comment(12))
             await self.refresh(app, pilot)
+            self.assertEqual(table.cursor_row, len(expected) - 1)
             self.assertIn("+1 комм.", self.visible(app))
             await pilot.press("ctrl+home")
-            await pilot.click("#other", offset=(5, 2))
-            await self.settled(app, pilot)
-            self.assertEqual([str(cell) for cell in table.get_row_at(table.cursor_row)],
-                             ["", "", "", ""])
-            await pilot.press("enter")
-            await self.settled(app, pilot)
-            self.assertEqual(len(self.opened), 1)
-            self.assertIn("+1 комм.", self.visible(app))
-            await pilot.press("down")
-            self.assertTrue(table.get_row_at(table.cursor_row)[2])
-            await pilot.click("#other", offset=(5, 1))
+            for y in (0, table.header_height + table.row_count):
+                await pilot.click("#other", offset=(5, y))
+                await self.settled(app, pilot)
+                self.assertEqual(len(self.opened), 1)
+                self.assertIn("+1 комм.", self.visible(app))
+            await pilot.click("#other", offset=(5, table.header_height))
             await self.settled(app, pilot)
             self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-1")
             self.assertNotIn("+1 комм.", self.visible(app))
-            self.assertTrue(table.get_row_at(table.cursor_row)[2])
+            self.assertEqual(table.cursor_row, 0)
 
     async def test_enter_and_real_mouse_click_acknowledge(self):
         async with self.running() as (app, pilot):
@@ -549,7 +539,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.opened, [self.server.url + "/browse/DEMO-1"])
             self.assertNotIn("комм.", self.visible(app))
             self.assertEqual(self.notice(app), "")
-            await pilot.click("#other", offset=(5, 2))
+            await pilot.click("#other", offset=(5, 1))
             await self.settled(app, pilot)
             self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-2")
             self.assertEqual(len(self.opened), 2)
