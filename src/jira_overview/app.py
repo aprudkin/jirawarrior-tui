@@ -59,6 +59,10 @@ class IssueTable(DataTable):
                          cursor_foreground_priority="renderable", **kwargs)
         self.shown: dict[str, Issue] = {}
 
+    def on_resize(self):
+        if self.id == "sprint":
+            self.call_after_refresh(self.app.fit_sprint_area)
+
     def _key_at(self, row: int) -> str:
         return self.coordinate_to_cell_key(Coordinate(row, 0)).row_key.value
 
@@ -111,7 +115,14 @@ class Overview(App):
     CSS = """
     Screen { layout: vertical; }
     #connection, #notice { height: auto; max-height: 4; }
+    #notice { display: none; }
+    #areas { height: 1fr; }
     .area { height: 1fr; min-height: 4; }
+    #sprint-area {
+        height: 3;
+        min-height: 0;
+        margin-bottom: 3;
+    }
     .heading { height: auto; max-height: 3; text-style: bold; }
     IssueTable { height: 1fr; }
     Footer { height: 1; }
@@ -128,12 +139,13 @@ class Overview(App):
     def compose(self) -> ComposeResult:
         yield Static("Загрузка Jira…", id="connection", markup=False)
         yield Static("", id="notice", markup=False)
-        for area in ("sprint", "other"):
-            with Vertical(classes="area"):
-                yield Static("Текущий спринт — загрузка…" if area == "sprint" else
-                             "Остальные мои задачи — загрузка…", id=area + "-heading",
-                             classes="heading", markup=False)
-                yield IssueTable(id=area)
+        with Vertical(id="areas"):
+            for area in ("sprint", "other"):
+                with Vertical(id=area + "-area", classes="area"):
+                    yield Static("Текущий спринт — загрузка…" if area == "sprint" else
+                                 "Остальные мои задачи — загрузка…", id=area + "-heading",
+                                 classes="heading", markup=False)
+                    yield IssueTable(id=area)
         yield Footer()
 
     def on_mount(self):
@@ -158,6 +170,25 @@ class Overview(App):
         if self.is_mounted:
             self.paint_view()
 
+    def on_resize(self):
+        self.call_after_refresh(self.fit_sprint_area)
+
+    def fit_sprint_area(self):
+        table = self.query_one("#sprint", IssueTable)
+        heading = self.query_one("#sprint-heading", Static)
+        other = self.query_one("#other", IssueTable)
+        other_heading = self.query_one("#other-heading", Static)
+        available = max(0, self.query_one("#areas", Vertical).size.height - 3)
+        # Prefer half the space for a long sprint, but allow a wrapped heading
+        # plus one issue and reserve at least one visible issue in the other area.
+        minimum = (heading.size.height + table.header_height + min(1, table.row_count) +
+                   table.scrollbar_size_horizontal)
+        other_minimum = max(4, other_heading.size.height + other.header_height +
+                            min(1, other.row_count) + other.scrollbar_size_horizontal)
+        self.query_one("#sprint-area", Vertical).styles.height = min(
+            heading.size.height + table.virtual_size.height + table.scrollbar_size_horizontal,
+            max(available // 2, minimum), max(0, available - other_minimum))
+
     def action_noop(self):
         pass
 
@@ -178,7 +209,10 @@ class Overview(App):
                 f"{view.display_name} ({plain(view.user_id or '')}) | {freshness}")
         elif view.refresh_error:
             self.query_one("#connection", Static).update(f"НЕТ УСПЕШНОЙ ЗАГРУЗКИ | {view.refresh_error}")
-        self.query_one("#notice", Static).update(view.open_notice or "")
+        notice = self.query_one("#notice", Static)
+        notice.update(view.open_notice or "")
+        notice.display = bool(view.open_notice)
+        self.call_after_refresh(self.fit_sprint_area)
 
     def paint_snapshot(self):
         if not self.session.view.snapshot:

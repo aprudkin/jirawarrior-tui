@@ -415,6 +415,100 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.settled(app, pilot)
             self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-1")
 
+    async def test_sprint_height_tracks_rows_with_three_blank_lines_between_areas(self):
+        self.server.page_size = 100
+        async with self.running(size=(110, 40)) as (app, pilot):
+            sprint = app.query_one("#sprint", IssueTable)
+            other_heading = app.query_one("#other-heading", Static)
+
+            async def assert_layout(count):
+                await pilot.pause()
+                self.assertEqual(sprint.row_count, count)
+                self.assertEqual(sprint.size.height, sprint.header_height + count)
+                self.assertEqual(other_heading.region.y - sprint.region.bottom, 3)
+                return other_heading.region.y
+
+            initial_y = await assert_layout(1)
+            self.server.issues.extend([issue(3, [{"id": 1}]), issue(4, [{"id": 1}])])
+            await self.refresh(app, pilot)
+            self.assertEqual(await assert_layout(3), initial_y + 2)
+            self.server.issues[0]["fields"]["customfield_123"] = None
+            await self.refresh(app, pilot)
+            self.assertEqual(await assert_layout(2), initial_y + 1)
+            for item in self.server.issues:
+                item["fields"]["customfield_123"] = None
+            await self.refresh(app, pilot)
+            self.assertEqual(await assert_layout(0), initial_y - 1)
+            self.assertIn("нет задач", str(app.query_one("#sprint-heading", Static).render()))
+            self.server.issues[0]["fields"]["customfield_123"] = [{"id": 1}]
+            await self.refresh(app, pilot)
+            self.assertEqual(await assert_layout(1), initial_y)
+            self.server.issues.extend(issue(i, [{"id": 1}]) for i in range(5, 35))
+            await self.refresh(app, pilot)
+            await pilot.pause()
+            self.assertLess(sprint.size.height, sprint.header_height + sprint.row_count)
+            self.assertEqual(other_heading.region.y - sprint.region.bottom, 3)
+            await pilot.press("ctrl+end")
+            self.server.issues = self.server.issues[:2]
+            await self.refresh(app, pilot)
+            self.assertEqual(await assert_layout(1), initial_y)
+            self.assertEqual(sprint.scroll_y, 0)
+
+    async def test_sprint_gap_survives_wrapped_heading_and_horizontal_scrollbar(self):
+        self.server.issues[0]["fields"]["customfield_123"] = [
+            {"id": sid} for sid in (1, 2, 4, 5, 6, 7, 8)]
+        async with self.running(size=(45, 16)) as (app, pilot):
+            sprint = app.query_one("#sprint", IssueTable)
+            heading = app.query_one("#sprint-heading", Static)
+            other = app.query_one("#other", IssueTable)
+            other_heading = app.query_one("#other-heading", Static)
+            for width, height in ((45, 16), (160, 45), (45, 16)):
+                with self.subTest(size=(width, height)):
+                    await pilot.resize_terminal(width, height)
+                    await pilot.pause()
+                    if width == 45:
+                        self.assertEqual(heading.size.height, 3)
+                        self.assertTrue(sprint.show_horizontal_scrollbar)
+                    self.assertEqual(sprint.size.height, sprint.header_height + sprint.row_count +
+                                     (sprint.scrollbar_size_horizontal
+                                      if sprint.show_horizontal_scrollbar else 0))
+                    self.assertEqual(other_heading.region.y - sprint.region.bottom, 3)
+                    self.assertGreater(other.scrollable_content_region.height, other.header_height)
+                    self.assertLessEqual(other.region.bottom, height - 1)
+                    await pilot.click(offset=(3, sprint.region.bottom + 1))
+                    await self.settled(app, pilot)
+                    self.assertEqual(self.opened, [])
+
+    async def test_long_sprint_keeps_both_areas_visible_and_independently_scrollable(self):
+        self.server.page_size = 100
+        self.server.issues = ([issue(i, [{"id": 1}]) for i in range(1, 31)] +
+                              [issue(i) for i in range(31, 61)])
+        async with self.running(size=(110, 32)) as (app, pilot):
+            sprint = app.query_one("#sprint", IssueTable)
+            other = app.query_one("#other", IssueTable)
+            other_heading = app.query_one("#other-heading", Static)
+            for width, height in ((110, 32), (45, 16), (160, 45), (45, 16)):
+                with self.subTest(size=(width, height)):
+                    await pilot.resize_terminal(width, height)
+                    await pilot.pause()
+                    self.assertEqual(other_heading.region.y - sprint.region.bottom, 3)
+                    self.assertGreater(sprint.scrollable_content_region.height, sprint.header_height)
+                    self.assertGreater(other.scrollable_content_region.height, other.header_height)
+                    self.assertLessEqual(other.region.bottom, height - 1)
+                    self.assertGreater(sprint.max_scroll_y, 0)
+                    self.assertGreater(other.max_scroll_y, 0)
+                    sprint.focus()
+                    await pilot.press("ctrl+end")
+                    await pilot.pause()
+                    self.assertGreater(sprint.scroll_y, 0)
+                    before = sprint.scroll_y
+                    await pilot.press("tab", "ctrl+end")
+                    await pilot.pause()
+                    self.assertEqual(app.focused.id, "other")
+                    self.assertGreater(other.scroll_y, 0)
+                    self.assertEqual(sprint.scroll_y, before)
+                    self.assertEqual(self.opened, [])
+
     async def test_baseline_pagination_regions_and_read_only(self):
         self.server.issues[0]["comments"] = [comment(1), comment(2), comment(3)]
         async with self.running() as (app, pilot):
