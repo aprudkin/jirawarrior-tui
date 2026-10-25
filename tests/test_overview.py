@@ -703,15 +703,20 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(0.6)
             await self.settled(app, pilot)
             self.assertIn("DEMO-4 NEW", self.visible(app))
-            self.server.delay = 1
-            await pilot.press("r", "r", "r")
-            await pilot.pause(0.1)
-            before = len(self.server.requests)
-            await pilot.press("r", "r")
-            self.assertEqual(len(self.server.requests), before)
-            start = time.monotonic()
-            await pilot.press("q")
-            self.assertLess(time.monotonic() - start, 0.8)
+            # Hold one request explicitly: a timed delay may finish while Pilot
+            # sends keys, allowing the same snapshot's next GET to change the count.
+            self.server.request_gate = True
+            try:
+                await pilot.press("r", "r", "r")
+                self.assertTrue(await asyncio.to_thread(self.server.request_started.wait, 2))
+                before = len(self.server.requests)
+                await pilot.press("r", "r")
+                self.assertEqual(len(self.server.requests), before)
+                start = time.monotonic()
+                await pilot.press("q")
+                self.assertLess(time.monotonic() - start, 0.8)
+            finally:
+                self.server.request_release.set()
 
     async def test_redirect_never_sends_authorization_to_other_origin(self):
         other = Server()
