@@ -138,7 +138,7 @@ class Overview(App):
 
     def on_mount(self):
         for table in self.query(IssueTable):
-            table.add_columns("Ключ / метки", "Название", "Статус", "Спринт")
+            table.add_columns("Тикет", "Название", "Статус", "Спринт")
         self.query_one("#sprint", IssueTable).focus()
         self.run_worker(self.session.start(), group="session", exit_on_error=False)
 

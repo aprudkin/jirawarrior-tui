@@ -212,6 +212,16 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(style.bold)
                     self.assertEqual(style.color, Color.parse(color))
 
+    async def test_ticket_column_heading_in_both_areas(self):
+        async with self.running() as (app, _):
+            for table_id in ("sprint", "other"):
+                with self.subTest(table=table_id):
+                    table = app.query_one("#" + table_id, IssueTable)
+                    self.assertEqual(
+                        [column.label.plain for column in table.ordered_columns],
+                        ["Тикет", "Название", "Статус", "Спринт"],
+                    )
+
     async def test_highlight_combinations_refresh_open_and_restart(self):
         async with self.running() as (app, pilot):
             self.assert_row_highlight(app, "sprint", 0)
