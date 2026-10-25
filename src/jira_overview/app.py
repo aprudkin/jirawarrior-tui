@@ -121,7 +121,7 @@ class Overview(App):
     #sprint-area {
         height: 3;
         min-height: 0;
-        margin-bottom: 3;
+        margin-bottom: 1;
     }
     .heading { height: auto; max-height: 3; text-style: bold; }
     IssueTable { height: 1fr; }
@@ -178,7 +178,7 @@ class Overview(App):
         heading = self.query_one("#sprint-heading", Static)
         other = self.query_one("#other", IssueTable)
         other_heading = self.query_one("#other-heading", Static)
-        available = max(0, self.query_one("#areas", Vertical).size.height - 3)
+        available = max(0, self.query_one("#areas", Vertical).size.height - 1)
         # Prefer half the space for a long sprint, but allow a wrapped heading
         # plus one issue and reserve at least one visible issue in the other area.
         minimum = (heading.size.height + table.header_height + min(1, table.row_count) +

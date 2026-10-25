@@ -415,7 +415,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.settled(app, pilot)
             self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-1")
 
-    async def test_sprint_height_tracks_rows_with_three_blank_lines_between_areas(self):
+    async def test_sprint_height_tracks_rows_with_one_blank_line_between_areas(self):
         self.server.page_size = 100
         async with self.running(size=(110, 40)) as (app, pilot):
             sprint = app.query_one("#sprint", IssueTable)
@@ -425,7 +425,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertEqual(sprint.row_count, count)
                 self.assertEqual(sprint.size.height, sprint.header_height + count)
-                self.assertEqual(other_heading.region.y - sprint.region.bottom, 3)
+                self.assertEqual(other_heading.region.y - sprint.region.bottom, 1)
                 return other_heading.region.y
 
             initial_y = await assert_layout(1)
@@ -447,7 +447,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.refresh(app, pilot)
             await pilot.pause()
             self.assertLess(sprint.size.height, sprint.header_height + sprint.row_count)
-            self.assertEqual(other_heading.region.y - sprint.region.bottom, 3)
+            self.assertEqual(other_heading.region.y - sprint.region.bottom, 1)
             await pilot.press("ctrl+end")
             self.server.issues = self.server.issues[:2]
             await self.refresh(app, pilot)
@@ -472,10 +472,10 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(sprint.size.height, sprint.header_height + sprint.row_count +
                                      (sprint.scrollbar_size_horizontal
                                       if sprint.show_horizontal_scrollbar else 0))
-                    self.assertEqual(other_heading.region.y - sprint.region.bottom, 3)
+                    self.assertEqual(other_heading.region.y - sprint.region.bottom, 1)
                     self.assertGreater(other.scrollable_content_region.height, other.header_height)
                     self.assertLessEqual(other.region.bottom, height - 1)
-                    await pilot.click(offset=(3, sprint.region.bottom + 1))
+                    await pilot.click(offset=(3, sprint.region.bottom))
                     await self.settled(app, pilot)
                     self.assertEqual(self.opened, [])
 
@@ -491,7 +491,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(size=(width, height)):
                     await pilot.resize_terminal(width, height)
                     await pilot.pause()
-                    self.assertEqual(other_heading.region.y - sprint.region.bottom, 3)
+                    self.assertEqual(other_heading.region.y - sprint.region.bottom, 1)
                     self.assertGreater(sprint.scrollable_content_region.height, sprint.header_height)
                     self.assertGreater(other.scrollable_content_region.height, other.header_height)
                     self.assertLessEqual(other.region.bottom, height - 1)
