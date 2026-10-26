@@ -1,6 +1,6 @@
 [project]
 name = "jirawarrior-tui"
-version = "0.1.0"
+version = "0.2.0"
 description = "Jira Server/Data Center overview with local unread markers and sprint add"
 readme = "README.md"
 requires-python = ">=3.11"

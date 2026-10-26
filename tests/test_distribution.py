@@ -15,7 +15,7 @@ COMMANDS = ("jirawarrior", "jw")
 class DistributionTests(unittest.TestCase):
     def test_standalone_metadata_exposes_only_the_new_commands(self):
         distribution = metadata.distribution("jirawarrior-tui")
-        self.assertEqual(distribution.version, "0.1.0")
+        self.assertEqual(distribution.version, "0.2.0")
         self.assertEqual(distribution.metadata["License-Expression"], "MIT")
         self.assertEqual(
             sorted((entry.name, entry.value) for entry in distribution.entry_points

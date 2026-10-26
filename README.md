@@ -7,7 +7,7 @@ TUI для своих незавершённых задач в **Jira Server/Dat
 Основная команда — **`jirawarrior`**, короткий алиас — **`jw`**.
 Команда `jira-overview` удалена. Интеграции с Taskwarrior нет.
 
-Первый выпуск поддерживает **только macOS**, Python **3.11+**,
+Поддерживаются **только macOS**, Python **3.11+**,
 [uv](https://docs.astral.sh/uv/) и Git для установки из репозитория.
 Linux, Windows, Jira Cloud, Basic auth, cookies, общая запись в Jira и командные
 дашборды не поддерживаются. Единственное действие записи — **A → Спринт**, описанное ниже. Нужен Jira Software с доступным Agile API и Bearer PAT;
@@ -16,13 +16,12 @@ Linux, Windows, Jira Cloud, Basic auth, cookies, общая запись в Jira
 
 ## Установка
 
-Команды `jirawarrior` и `jw` доступны в текущей **main**, пока без нового
-тега/release. Опубликованный тег **v0.1.0** содержит только прежнюю команду
-`jira-overview`. Установите текущую main в отдельное uv tool-окружение
-(если приложение уже установлено, эта команда обновит его):
+Стабильный выпуск **v0.2.0** устанавливает команды `jirawarrior` и `jw`.
+Установите его в отдельное uv tool-окружение (если приложение уже установлено,
+эта команда обновит его). Перед обновлением завершите работающий TUI:
 
 ```sh
-uv tool install --force --refresh-package jirawarrior-tui --python 3.12 'git+https://github.com/aprudkin/jirawarrior-tui.git@main'
+uv tool install --force --refresh-package jirawarrior-tui --python 3.12 'git+https://github.com/aprudkin/jirawarrior-tui.git@v0.2.0'
 ```
 
 Python 3.12 выбран для воспроизводимого сценария первого выпуска; uv при
@@ -130,7 +129,8 @@ alias t='noglob command task --global --exit-code'
 
 ## Переход с ossetup
 
-В текущей main запуск переименован: вместо `jira-overview` используйте
+Начиная с **v0.2.0**, в том числе при обновлении с **v0.1.0**, запуск
+переименован: вместо `jira-overview` используйте
 `jirawarrior` или `jw`. Старый исполняемый файл больше не устанавливается;
 обновите вызывающие его скрипты и ранее скопированный Taskfile по инструкции выше.
 Python-модуль `jira_overview`, TOML, XDG-переменные и каталог состояния
