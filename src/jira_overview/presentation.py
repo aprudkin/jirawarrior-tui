@@ -76,12 +76,29 @@ def _family_rows(items: list[ReviewItem], by_key: dict[str, ReviewItem], *,
     return rows
 
 
+def _tree_prefixes(rows: list[tuple[ReviewItem, int]]) -> list[str]:
+    """Connect only the visible siblings, resetting at each top-level root."""
+    prefixes = []
+    later_siblings: set[int] = set()
+    for _, depth in reversed(rows):
+        later_siblings = {level for level in later_siblings if level <= depth}
+        if depth == 0:
+            prefixes.append("")
+        else:
+            ancestors = "".join("│  " if level in later_siblings else "   "
+                                for level in range(1, depth))
+            prefixes.append(ancestors + ("├─ " if depth in later_siblings else "└─ "))
+        later_siblings.add(depth)
+    return list(reversed(prefixes))
+
+
 def _issue_cells(item: ReviewItem, *, epic_count: int | None = None,
-                 indent: int = 0) -> tuple[Text, Text, Text, Text]:
+                 prefix: str = "") -> tuple[Text, Text, Text, Text]:
     issue = item.issue
     emphasis = "bold" if issue.is_epic or item.new or item.unread_comments else ""
-    key = Text("  " * indent + issue.key,
-               style="bold cyan" if issue.is_epic else emphasis)
+    key = Text()
+    key.append(prefix, style="dim")
+    key.append(issue.key, style="bold cyan" if issue.is_epic else emphasis)
     if item.new:
         key.append(" NEW", style="bold green")
     if item.unread_comments:
@@ -424,9 +441,12 @@ class OverviewPresentation(Vertical):
                            and bool(item.issue.sprints) == (table.id == "sprint")]
                 rows = _family_rows(tickets, by_key, open_first=table.id == "other")
             plans[table] = rows
-        # Measure the final rows, including contextual copies and all indentation.
-        cells_by_table = {table: [_issue_cells(item, epic_count=epic_counts.get(item.issue.key), indent=depth)
-                                  for item, depth in rows] for table, rows in plans.items()}
+        # Measure the final tree, including contextual copies and all connectors.
+        cells_by_table = {
+            table: [_issue_cells(item, epic_count=epic_counts.get(item.issue.key), prefix=prefix)
+                    for (item, _), prefix in zip(rows, _tree_prefixes(rows))]
+            for table, rows in plans.items()
+        }
         column_widths = [Text(label).cell_len for label in _COLUMN_LABELS]
         for cells in cells_by_table.values():
             for row in cells:

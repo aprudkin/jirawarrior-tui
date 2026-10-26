@@ -46,8 +46,7 @@ class FilterTests(unittest.IsolatedAsyncioTestCase):
 
     def keys(self, app, area):
         table = app.query_one("#" + area, IssueTable)
-        return [table.get_row_at(row)[0].plain.strip().split()[0]
-                for row in range(table.row_count)]
+        return [table.shown[table._key_at(row)].key for row in range(table.row_count)]
 
     def history(self):
         return {p.name: p.read_bytes() for p in self.state_dir.glob("*.json")}

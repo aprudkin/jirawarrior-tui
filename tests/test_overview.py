@@ -507,7 +507,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(by_key[f"DEMO-{base + 4}"][3],
                                  datetime.fromisoformat(dates[3]).astimezone().strftime("%d.%m.%Y"))
             await pilot.press("e")
-            self.assertEqual([row[0].strip() for row in self.rows(app, "epic")], [
+            self.assertEqual([row[0].lstrip(" │├└─") for row in self.rows(app, "epic")], [
                 "DEMO-1000", "DEMO-104", "DEMO-4", "DEMO-102", "DEMO-103", "DEMO-2", "DEMO-3",
                 "DEMO-1", "DEMO-101", "DEMO-105", "DEMO-106", "DEMO-107", "DEMO-5", "DEMO-6",
                 "DEMO-7", "DEMO-108", "DEMO-8", "DEMO-109", "DEMO-9", "DEMO-2000",
@@ -1056,7 +1056,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(set(saved["issues"]), {"1", "3", "4"})
             await pilot.press("e")
             await pilot.pause()
-            self.assertEqual([r[0].strip() for r in self.rows(app, "epic")],
+            self.assertEqual([r[0].lstrip(" │├└─") for r in self.rows(app, "epic")],
                              ["DEMO-100", "DEMO-1", "DEMO-200", "DEMO-300", "DEMO-4"])
             self.assertIn("(1)", self.rows(app, "epic")[0][1])
             self.assertEqual(self.opened, [])
@@ -1640,9 +1640,9 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
         async with self.running(size=(180, 40)) as (app, pilot):
             sprint = app.query_one("#sprint", IssueTable)
             other = app.query_one("#other", IssueTable)
-            self.assertEqual([row[0] for row in self.rows(app, "sprint")], ["DEMO-10", "  DEMO-123456"])
-            self.assertEqual([row[0] for row in self.rows(app, "other")], ["DEMO-10", "  DEMO-2"])
-            self.assertEqual(sprint.ordered_columns[0].width, Text("  DEMO-123456").cell_len)
+            self.assertEqual([row[0] for row in self.rows(app, "sprint")], ["DEMO-10", "└─ DEMO-123456"])
+            self.assertEqual([row[0] for row in self.rows(app, "other")], ["DEMO-10", "└─ DEMO-2"])
+            self.assertEqual(sprint.ordered_columns[0].width, Text("└─ DEMO-123456").cell_len)
             self.assert_status_columns_aligned(app)
             await pilot.press("down")
             self.assertEqual(sprint._key_at(sprint.cursor_row), "123456")
@@ -1661,9 +1661,9 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("e")
             epic = app.query_one("#epic", IssueTable)
             self.assertEqual([row[0] for row in self.rows(app, "epic")],
-                             ["DEMO-100", "  DEMO-10", "    DEMO-123456", "    DEMO-2"])
+                             ["DEMO-100", "└─ DEMO-10", "   ├─ DEMO-123456", "   └─ DEMO-2"])
             self.assertEqual(epic._key_at(epic.cursor_row), "123456")
-            self.assertEqual(epic.ordered_columns[0].width, Text("    DEMO-123456").cell_len)
+            self.assertEqual(epic.ordered_columns[0].width, Text("   ├─ DEMO-123456").cell_len)
             await pilot.press("up", "down", "ctrl+end", "ctrl+home", "down", "down", "e")
             self.assertEqual(sprint._key_at(sprint.cursor_row), "123456")
             self.assertEqual(next(self.state_dir.glob("*.json")).read_bytes(), before)
@@ -1673,7 +1673,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(app.focused, other)
             self.assertEqual(other._key_at(other.cursor_row), "123456")
             self.assertEqual([row[0] for row in self.rows(app, "other")],
-                             ["DEMO-10", "  DEMO-123456", "  DEMO-2"])
+                             ["DEMO-10", "├─ DEMO-123456", "└─ DEMO-2"])
             self.assertEqual(len({item.id for item in app.snapshot.issues if item.tracked}), 4)
             self.assertIn("(2)", str(app.query_one("#other-heading", Static).render()))
             self.assertFalse(self.opened)
@@ -1688,7 +1688,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             sprint = app.query_one("#sprint", IssueTable)
             other = app.query_one("#other", IssueTable)
             self.assertEqual([row[0] for row in self.rows(app, "sprint")],
-                             ["DEMO-10", "  DEMO-1 Comment +1", "  DEMO-2"])
+                             ["DEMO-10", "├─ DEMO-1 Comment +1", "└─ DEMO-2"])
             self.assertEqual(other.get_row_at(0)[0].plain, "DEMO-10 Comment +1")
             before = next(self.state_dir.glob("*.json")).read_bytes()
             await pilot.click("#sprint", offset=(4, 1))
@@ -1711,8 +1711,8 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.opened, [self.server.url + "/browse/DEMO-10"])
             self.assertEqual(next(self.state_dir.glob("*.json")).read_bytes(), before)
             self.assertEqual(other.get_row_at(0)[0].plain, "DEMO-10 Comment +2")
-            self.assertEqual(sprint.get_row_at(1)[0].plain, "  DEMO-1 Comment +1")
-            self.assertEqual(sprint.get_row_at(2)[0].plain, "  DEMO-2 Comment +1")
+            self.assertEqual(sprint.get_row_at(1)[0].plain, "├─ DEMO-1 Comment +1")
+            self.assertEqual(sprint.get_row_at(2)[0].plain, "└─ DEMO-2 Comment +1")
             await pilot.click("#sprint", offset=(4, 1), control=True)
             await self.settled(app, pilot)
             self.assertEqual(len(self.opened), 2)
@@ -1825,7 +1825,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
         async with self.running(size=(45, 16)) as (app, pilot):
             self.assertEqual([r[0] for r in self.rows(app, "sprint")], ["DEMO-1"])
             self.assertEqual([r[0] for r in self.rows(app, "other")],
-                             ["DEMO-2", "DEMO-3", "DEMO-300", "  DEMO-4"])
+                             ["DEMO-2", "DEMO-3", "DEMO-300", "└─ DEMO-4"])
             saved = next(self.state_dir.glob("*.json")).read_bytes()
             requests = len(self.server.requests)
             await pilot.press("e")
@@ -1834,7 +1834,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.query_one("#sprint-area").display)
             self.assertFalse(app.query_one("#other-area").display)
             table = app.query_one("#epic", IssueTable)
-            keys = [r[0].strip().split()[0] for r in self.rows(app, "epic")]
+            keys = [r[0].lstrip(" │├└─").split()[0] for r in self.rows(app, "epic")]
             self.assertEqual(keys, ["DEMO-100", "DEMO-1", "DEMO-2", "DEMO-101", "DEMO-200",
                                     "DEMO-300", "DEMO-4"])
             self.assertEqual(table._key_at(table.cursor_row), "1")
@@ -1864,7 +1864,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("e")
             await pilot.pause()
             table = app.query_one("#epic", IssueTable)
-            keys = [r[0].strip() for r in self.rows(app, "epic")]
+            keys = [r[0].lstrip(" │├└─") for r in self.rows(app, "epic")]
             self.assertEqual(keys[:4], ["DEMO-100", "DEMO-5 NEW", "DEMO-1 Comment +1", "DEMO-2"])
             self.assertIn("DEMO-102 NEW", keys)
             context_row = next(n for n in range(table.row_count) if table._key_at(n) == "200")
