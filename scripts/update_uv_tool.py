@@ -20,8 +20,13 @@ class UpdateError(RuntimeError):
     pass
 
 
-def run(args, *, env=None, check=True):
-    result = subprocess.run(args, check=False, env=env, text=True, capture_output=True)
+def run(args, *, env=None, cwd=None, check=True):
+    try:
+        result = subprocess.run(
+            args, check=False, cwd=cwd, env=env, text=True, capture_output=True
+        )
+    except OSError as error:
+        raise UpdateError(f"could not launch {args[0]}: {error.strerror}") from error
     if check and result.returncode:
         raise UpdateError(f"command failed ({result.returncode}): {args[0]} {args[1]}")
     return result
@@ -60,11 +65,12 @@ def check_commands(bin_dir):
             executable = bin_dir / command
             if not executable.is_file():
                 raise UpdateError(f"missing installed command: {command}")
-            result = run([str(executable), "--help"], check=False)
+            result = run([str(executable), "--help"], cwd=temporary, check=False)
             if result.returncode or f"usage: {command} " not in result.stdout:
                 raise UpdateError(f"installed command failed --help: {command}")
             regression = run(
                 [str(executable), "--check", "--config", str(config)],
+                cwd=temporary,
                 env=env,
                 check=False,
             )

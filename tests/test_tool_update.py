@@ -38,9 +38,10 @@ class ToolUpdateTests(unittest.TestCase):
         for name in ("jirawarrior", "jw"):
             command = installed_bin / name
             command.write_text(
-                "#!/usr/bin/env python3\nimport sys\nif '--check' in sys.argv: print('Переменная окружения с токеном отсутствует', file=sys.stderr); raise SystemExit(1)\nprint('usage: "
-                + name
-                + " [options]')\n"
+                "#!/usr/bin/env python3\nimport json, os, sys\n"
+                "print(json.dumps([os.getcwd(), sys.argv[1:]]), file=open(os.environ['COMMAND_CWDS'], 'a'))\n"
+                "if '--check' in sys.argv: print('Переменная окружения с токеном отсутствует', file=sys.stderr); raise SystemExit(1)\n"
+                "print('usage: " + name + " [options]')\n"
             )
             command.chmod(0o755)
         uv = self.root / "bin/uv"
@@ -70,7 +71,7 @@ if args[:2] == ["tool", "install"]:
         (metadata / "direct_url.json").write_text(json.dumps({"url": "https://github.com/aprudkin/jirawarrior-tui.git", "vcs_info": {"vcs": "git", "commit_id": sha}}))
         for name in ("jirawarrior", "jw"):
             p = target / name
-            p.write_text("#!/usr/bin/env python3\\nimport sys\\nif '--check' in sys.argv: print('Переменная окружения с токеном отсутствует', file=sys.stderr); raise SystemExit(1)\\nprint('usage: " + name + " [options]')\\n")
+            p.write_text("#!/usr/bin/env python3\\nimport json, os, sys\\nprint(json.dumps([os.getcwd(), sys.argv[1:]]), file=open(os.environ['COMMAND_CWDS'], 'a'))\\nif '--check' in sys.argv: print('Переменная окружения с токеном отсутствует', file=sys.stderr); raise SystemExit(1)\\nprint('usage: " + name + " [options]')\\n")
             p.chmod(0o755)
         raise SystemExit()
     state = pathlib.Path(os.environ["STATE"])
@@ -88,8 +89,8 @@ if args[:2] == ["tool", "install"]:
         if os.environ.get("BAD_TARGET_HELP") and sha != os.environ["OLD_SHA"]:
             p.write_text("#!/usr/bin/env python3\\nprint('broken')\\n")
         else:
-            p.write_text("#!/usr/bin/env python3\\nimport sys\\nif '--check' in sys.argv: print('Переменная окружения с токеном отсутствует', file=sys.stderr); raise SystemExit(1)\\nprint('usage: " + name + " [options]')\\n")
-        p.chmod(0o755)
+            p.write_text("#!/usr/bin/env python3\\nimport json, os, sys\\nprint(json.dumps([os.getcwd(), sys.argv[1:]]), file=open(os.environ['COMMAND_CWDS'], 'a'))\\nif '--check' in sys.argv: print('Переменная окружения с токеном отсутствует', file=sys.stderr); raise SystemExit(1)\\nprint('usage: " + name + " [options]')\\n")
+        p.chmod(0o644 if os.environ.get("BAD_TARGET_LAUNCH") and sha != os.environ["OLD_SHA"] else 0o755)
     if os.environ.get("PARTIAL_PROMOTION") and sha != os.environ["OLD_SHA"]:
         state.write_text(json.dumps({"sha": sha, "usable": False}))
         raise SystemExit(23)
@@ -103,6 +104,7 @@ raise SystemExit(99)
             {
                 "PATH": f"{uv.parent}:{self.env['PATH']}",
                 "UV_LOG": str(self.uv_log),
+                "COMMAND_CWDS": str(self.root / "command-cwds.jsonl"),
                 "UV_TOOL_DIR": str(self.root / "tool"),
                 "UV_TOOL_BIN_DIR": str(self.root / "tool/bin"),
                 "UV_CACHE_DIR": str(self.root / "cache"),
@@ -115,13 +117,13 @@ raise SystemExit(99)
     def tearDown(self):
         self.temp.cleanup()
 
-    def run_update(self, *args, **extra):
+    def run_update(self, *args, cwd=None, **extra):
         env = self.env.copy()
         env.update(extra)
         return subprocess.run(
             ["python3", str(UPDATER), *args],
             check=False,
-            cwd=self.root,
+            cwd=cwd or self.root,
             env=env,
             text=True,
             capture_output=True,
@@ -138,7 +140,10 @@ raise SystemExit(99)
             command = self.root / "tool/bin" / name
             self.assertEqual(
                 subprocess.run(
-                    [str(command), "--help"], check=False, capture_output=True
+                    [str(command), "--help"],
+                    check=False,
+                    env=self.env,
+                    capture_output=True,
                 ).returncode,
                 0,
             )
@@ -185,6 +190,44 @@ raise SystemExit(99)
         recovery = invocations[promoted + 1 :]
         self.assertTrue(any(call[-1].endswith("@" + OLD) for call in recovery))
         self.assertTrue(any(call[:2] == ["tool", "dir"] for call in invocations))
+
+    def test_cli_invoked_from_checkout_runs_installed_commands_in_check_temp_dir(self):
+        result = self.run_update(NEW, OLD, cwd=ROOT)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        invocations = [
+            json.loads(line)
+            for line in (self.root / "command-cwds.jsonl").read_text().splitlines()
+        ]
+        self.assertTrue(any(arguments == ["--help"] for _, arguments in invocations))
+        self.assertTrue(
+            any(arguments[:1] == ["--check"] for _, arguments in invocations)
+        )
+        self.assertTrue(all(Path(cwd) != ROOT for cwd, _ in invocations))
+        self.assertTrue(
+            all(
+                Path(cwd).name.startswith("jirawarrior-cli-check-")
+                for cwd, _ in invocations
+            )
+        )
+
+    def test_non_executable_promoted_command_recovers_from_previous_sha(self):
+        result = self.run_update(NEW, OLD, BAD_TARGET_LAUNCH="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restored and verified PREVIOUS_SHA", result.stderr)
+        self.assertEqual(
+            json.loads(self.state.read_text()), {"sha": OLD, "usable": True}
+        )
+        for name in ("jirawarrior", "jw"):
+            command = self.root / "tool/bin" / name
+            self.assertEqual(
+                subprocess.run(
+                    [str(command), "--help"],
+                    check=False,
+                    env=self.env,
+                    capture_output=True,
+                ).returncode,
+                0,
+            )
 
     def test_failed_post_promotion_check_restores_known_previous_sha(self):
         result = self.run_update(NEW, OLD, BAD_TARGET_HELP="1")

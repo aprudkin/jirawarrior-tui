@@ -65,6 +65,7 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
             async with locked_process(self.root, self.state_dir) as process:
                 lock = next(self.state_dir.glob("*.lock"))
                 owner = await find_lock_owner(lock)
+                assert owner is not None
                 self.assertEqual(owner.pid, process.pid)
                 await stop_lock_owner(lock, owner)
                 await asyncio.wait_for(process.wait(), 3)
