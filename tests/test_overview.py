@@ -603,7 +603,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
         self.server.issues = [issue(i, [{"id": 1}]) for i in range(1, 7)]
         for item, status in zip(self.server.issues,
                                 ["In Progress", "On Hold", "On Hold", "Backlog",
-                                 "Verifying", "Verifying"]):
+                                 "Review", "Review"]):
             item["fields"]["status"]["name"] = status
         async with self.running() as (app, pilot):
             table = app.query_one("#sprint", IssueTable)
@@ -746,6 +746,78 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             saved = "".join(p.read_text() for p in self.state_dir.glob("*.json"))
             for sensitive in (TOKEN, BODY, "Synthetic task", "Synthetic User", self.server.url):
                 self.assertNotIn(sensitive, saved)
+
+    async def test_verifying_is_excluded_after_full_pagination_before_related_data_and_state(self):
+        self.server.issues = [issue(1, [{"id": 1}]), issue(2),
+                              issue(3, [{"id": 999}], epic_key="DEMO-999"),
+                              issue(4), issue(5, epic=True), issue(6)]
+        for item, status in zip(self.server.issues,
+                                ["In Progress", "To Do", "Verifying", "VERIFYING",
+                                 "verifying", "Awaiting Verification"]):
+            item["fields"]["status"]["name"] = status
+        async with self.running() as (app, pilot):
+            self.assertIsNotNone(app.snapshot)
+            self.assertEqual([i.id for i in app.snapshot.issues], ["1", "2", "6"])
+            self.assertEqual([r[0] for r in self.rows(app, "sprint")], ["DEMO-1"])
+            self.assertEqual([r[0] for r in self.rows(app, "other")], ["DEMO-2", "DEMO-6"])
+            searches = [p for _, path, p, _ in self.server.requests if path.endswith("/search")]
+            self.assertEqual([p["startAt"] for p in searches], [[str(i)] for i in range(6)])
+            self.assertTrue(all('status != "Verifying"' in p["jql"][0] for p in searches))
+            paths = [path for _, path, _, _ in self.server.requests]
+            for iid in (3, 4, 5):
+                self.assertNotIn(f"/rest/api/2/issue/{iid}/comment", paths)
+            self.assertNotIn("/rest/api/2/issue/DEMO-999", paths)
+            self.assertNotIn("/rest/agile/1.0/sprint/999", paths)
+            saved = json.loads(next(self.state_dir.glob("*.json")).read_text())
+            self.assertEqual(set(saved["issues"]), {"1", "2", "6"})
+            self.assertTrue(all(method == "GET" for method, *_ in self.server.requests))
+            await pilot.press("e")
+            await pilot.pause()
+            self.assertEqual(self.rows(app, "epic"), [])
+
+    async def test_verifying_transitions_preserve_history_and_accept_an_empty_snapshot(self):
+        async with self.running() as (app, pilot):
+            state_path = next(self.state_dir.glob("*.json"))
+            before = state_path.read_bytes()
+            self.server.issues.append(issue(3))
+            for item in self.server.issues:
+                item["fields"]["status"]["name"] = "Verifying"
+            self.server.issues[0]["comments"].append(comment(19))
+            await self.refresh(app, pilot)
+            self.assertEqual(app.snapshot.issues, ())
+            self.assertEqual(self.rows(app, "sprint"), [])
+            self.assertEqual(self.rows(app, "other"), [])
+            self.assertNotIn("УСТАРЕЛО", self.status(app))
+            self.assertEqual(state_path.read_bytes(), before)
+        async with self.running() as (app, pilot):
+            self.assertEqual(app.snapshot.issues, ())
+            for item in self.server.issues:
+                item["fields"]["status"]["name"] = "In Progress"
+            await self.refresh(app, pilot)
+            self.assertEqual([r[0] for r in self.rows(app, "sprint")], ["DEMO-1 Comment +1"])
+            self.assertEqual([r[0] for r in self.rows(app, "other")], ["DEMO-3 NEW", "DEMO-2"])
+
+    async def test_verifying_epic_is_only_context_for_remaining_children(self):
+        self.epic_fixture()
+        for item in self.server.issues:
+            if item["id"] in {"2", "100", "101"}:
+                item["fields"]["status"]["name"] = "Verifying"
+        async with self.running() as (app, pilot):
+            by_key = {i.key: i for i in app.snapshot.issues}
+            self.assertNotIn("DEMO-2", by_key)
+            self.assertNotIn("DEMO-101", by_key)
+            self.assertFalse(by_key["DEMO-100"].tracked)
+            paths = [path for _, path, _, _ in self.server.requests]
+            self.assertNotIn("/rest/api/2/issue/100/comment", paths)
+            self.assertNotIn("/rest/api/2/issue/2/comment", paths)
+            saved = json.loads(next(self.state_dir.glob("*.json")).read_text())
+            self.assertEqual(set(saved["issues"]), {"1", "3", "4"})
+            await pilot.press("e")
+            await pilot.pause()
+            self.assertEqual([r[0].strip() for r in self.rows(app, "epic")],
+                             ["DEMO-100", "DEMO-1", "DEMO-200", "DEMO-4"])
+            self.assertIn("(1)", self.rows(app, "epic")[0][1])
+            self.assertEqual(self.opened, [])
 
     async def test_header_shows_jira_warrior_and_name_without_user_id(self):
         async with self.running() as (app, pilot):
