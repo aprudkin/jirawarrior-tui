@@ -4,6 +4,7 @@ No corporate fixtures. The only external action replaced is browser handoff.
 """
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -879,6 +880,26 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([r[0].strip() for r in self.rows(app, "epic")],
                              ["DEMO-100", "DEMO-1", "DEMO-200", "DEMO-4"])
             self.assertIn("(1)", self.rows(app, "epic")[0][1])
+            self.assertEqual(self.opened, [])
+
+    async def test_default_interval_schedules_refresh_in_one_hour_and_keeps_manual_refresh(self):
+        app = Overview(Jira(self.server.url, TOKEN, allow_local_http=True), self.state_dir,
+                       browser=self.browser)
+        async with app.run_test(size=(160, 32)) as pilot:
+            await self.settled(app, pilot)
+            self.assertIsNotNone(app.snapshot)
+            schedule = app.session.view.next_refresh_at
+            scheduled = datetime.strptime(schedule.rsplit(" ", 1)[0], "%H:%M:%S")
+            now = datetime.now().astimezone()
+            seconds = ((scheduled.hour - now.hour) * 3600 +
+                       (scheduled.minute - now.minute) * 60 + scheduled.second -
+                       now.second - now.microsecond / 1_000_000) % 86400
+            self.assertTrue(3590 < seconds <= 3600, seconds)
+            self.assertIn(f"Следующее обновление {schedule}", self.status(app))
+            self.server.issues[0]["fields"]["summary"] = "Updated manually"
+            await self.refresh(app, pilot)
+            self.assertIn("Updated manually", self.visible(app))
+            self.assertEqual(app.session.view.next_refresh_at, schedule)
             self.assertEqual(self.opened, [])
 
     async def test_header_shows_jira_warrior_and_name_without_user_id(self):

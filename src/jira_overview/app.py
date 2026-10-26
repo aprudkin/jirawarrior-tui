@@ -15,10 +15,13 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
-from textual.widgets import Button, DataTable, Footer, OptionList, Static
+from textual.widgets import Button, DataTable, Footer, Input, OptionList, Static
+from textual.widgets.option_list import Option
 
 from .core import Issue, Jira, OverviewError
 from .session import ReviewItem, ReviewSession
+from .settings import (DEFAULT_REFRESH_SECONDS, read_refresh_seconds,
+                       validate_refresh_seconds, write_refresh_seconds)
 from .themes import ThemePanel, read_theme, write_theme
 
 
@@ -144,6 +147,54 @@ class IssueTable(DataTable):
         self._move_issue_cursor(1, edge=True)
 
 
+class IntervalInput(Input):
+    """Keep the sidebar's shortcuts available while entering a number."""
+    def check_consume_key(self, key: str, character: str | None) -> bool:
+        return key not in {"q", "r", "s", "S", "t", "T"} and super().check_consume_key(key, character)
+
+
+class SettingsPanel(Vertical):
+    """Docked settings list with an explicit, cancellable interval editor."""
+    BINDINGS = [Binding("escape", "app.cancel_settings", "Отменить", priority=True),
+                Binding("s", "app.toggle_settings", "Настройки", priority=True),
+                Binding("S", "app.toggle_settings", show=False, priority=True),
+                Binding("t", "app.toggle_themes", "Темы", priority=True),
+                Binding("T", "app.toggle_themes", show=False, priority=True),
+                Binding("r", "app.refresh", "Обновить", priority=True),
+                Binding("q", "app.quit", "Выход", priority=True),
+                Binding("ctrl+c", "app.quit", show=False, priority=True)]
+    DEFAULT_CSS = """
+    SettingsPanel {
+        display: none;
+        width: 32;
+        max-width: 55%;
+        height: 1fr;
+        border-left: solid $border;
+        background: $surface;
+        padding: 0 1;
+    }
+    #settings-heading { height: 1; margin-bottom: 1; }
+    #settings-title { width: 1fr; text-style: bold; }
+    #settings-close { width: 3; min-width: 3; height: 1; border: none; padding: 0; }
+    #settings-list { height: auto; border: none; padding: 0; }
+    #interval-editor { display: none; height: auto; }
+    #interval-label, #settings-error { height: auto; }
+    #settings-error { display: none; color: $error; }
+    #settings-hints { height: auto; margin-top: 1; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="settings-heading"):
+            yield Static("Настройки", id="settings-title")
+            yield Button("×", id="settings-close", tooltip="Закрыть настройки")
+        yield OptionList(id="settings-list", markup=False, compact=True)
+        with Vertical(id="interval-editor"):
+            yield Static("Интервал в секундах (5–86400)", id="interval-label")
+            yield IntervalInput(id="refresh-seconds", placeholder="3600", select_on_focus=True)
+            yield Static("", id="settings-error", markup=False)
+        yield Static("Enter изменить / сохранить\nEsc / s / × отменить", id="settings-hints")
+
+
 class Overview(App):
     TITLE = "Jira — мои задачи"
     ENABLE_COMMAND_PALETTE = False
@@ -170,9 +221,11 @@ class Overview(App):
                 Binding("е", "toggle_epics", show=False),
                 ("t", "toggle_themes", "Темы"),
                 Binding("T", "toggle_themes", show=False),
+                ("s", "toggle_settings", "Настройки"),
+                Binding("S", "toggle_settings", show=False),
                 ("tab", "focus_next", "Область"), ("enter", "noop", "Открыть")]
 
-    def __init__(self, jira: Jira, state_dir: Path, interval: float = 60,
+    def __init__(self, jira: Jira, state_dir: Path, interval: float = DEFAULT_REFRESH_SECONDS,
                  browser: Callable[[str], Awaitable[bool]] = open_browser):
         super().__init__()
         self.session = ReviewSession(jira, state_dir, interval, browser, self.session_changed)
@@ -181,8 +234,10 @@ class Overview(App):
         self.epic_mode = False
         self._theme_path = state_dir / "theme.json"
         self._theme_before_preview = None
-        self._theme_return_focus = None
-        self._theme_selected = None
+        self._panel_return_focus = None
+        self._panel_selected = None
+        self._settings_open = False
+        self._settings_path = state_dir / "settings.json"
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
@@ -197,6 +252,7 @@ class Overview(App):
                                          classes="heading", markup=False)
                             yield IssueTable(id=area)
             yield ThemePanel(self.available_themes, id="themes")
+            yield SettingsPanel(id="settings")
         yield Footer()
 
     def on_mount(self):
@@ -206,6 +262,12 @@ class Overview(App):
                 self.theme = saved_theme
         except OverviewError as error:
             self.notify(str(error), title="Темы", severity="warning")
+        try:
+            saved_interval = read_refresh_seconds(self._settings_path)
+            if saved_interval is not None:
+                self.session.set_interval(saved_interval)
+        except OverviewError as error:
+            self.notify(str(error), title="Настройки", severity="warning")
         for table in self.query(IssueTable):
             table.add_columns(*_COLUMN_LABELS)
         self.query_one("#sprint", IssueTable).focus()
@@ -252,8 +314,12 @@ class Overview(App):
     def action_noop(self):
         pass
 
+    @property
+    def _panel_open(self):
+        return self._theme_before_preview is not None or self._settings_open
+
     def check_action(self, action, parameters):
-        if action == "toggle_epics" and self._theme_before_preview is not None:
+        if action == "toggle_epics" and self._panel_open:
             return False
         return True
 
@@ -265,15 +331,12 @@ class Overview(App):
         if self._theme_before_preview is not None:
             self.action_cancel_theme()
             return
+        if self._settings_open:
+            self.query_one("#settings").display = False
+            self._settings_open = False
+        else:
+            self._capture_panel_focus()
         self._theme_before_preview = self.theme
-        self._theme_return_focus = self.focused
-        focused = self.focused if isinstance(self.focused, IssueTable) else None
-        self._theme_selected = (focused._key_at(focused.cursor_row)
-                                if focused and focused.row_count else None)
-        for table in self.query(IssueTable):
-            # Keep the overview's real colors visible, but constrain focus and
-            # input to the picker without visually disabling the preview.
-            table.can_focus = False
         self.query_one("#themes").display = True
         choices = self.query_one("#theme-list", OptionList)
         choices.highlighted = choices.get_option_index(self.current_theme.name)
@@ -311,25 +374,97 @@ class Overview(App):
     def _close_themes(self):
         self.query_one("#themes").display = False
         self._theme_before_preview = None
-        target = self._theme_return_focus
+        self._restore_panel_focus()
+
+    def _capture_panel_focus(self):
+        self._panel_return_focus = self.focused
+        focused = self.focused if isinstance(self.focused, IssueTable) else None
+        self._panel_selected = (focused._key_at(focused.cursor_row)
+                                if focused and focused.row_count else None)
+        for table in self.query(IssueTable):
+            # Preserve overview colors while keeping input inside the panel.
+            table.can_focus = False
+
+    def _restore_panel_focus(self):
+        target = self._panel_return_focus
         for table in self.query(IssueTable):
             table.can_focus = True
-            if table.display and table.parent.display and self._theme_selected in table.shown:
+            if table.display and table.parent.display and self._panel_selected in table.shown:
                 row = next(row for row in range(table.row_count)
-                           if table._key_at(row) == self._theme_selected)
+                           if table._key_at(row) == self._panel_selected)
                 table.move_cursor(row=row)
                 target = table
         if target is not None:
             target.focus()
-        self._theme_return_focus = None
-        self._theme_selected = None
+        self._panel_return_focus = None
+        self._panel_selected = None
         self.call_after_refresh(self.fit_sprint_area)
+
+    def action_toggle_settings(self):
+        if self._settings_open:
+            self.action_cancel_settings()
+            return
+        if self._theme_before_preview is not None:
+            self.theme = self._theme_before_preview
+            self._theme_before_preview = None
+            self.query_one("#themes").display = False
+        else:
+            self._capture_panel_focus()
+        self._settings_open = True
+        self.query_one("#settings").display = True
+        self.query_one("#interval-editor").display = False
+        self.query_one("#settings-error").display = False
+        choices = self.query_one("#settings-list", OptionList)
+        choices.clear_options()
+        choices.add_option(Option(f"Интервал обновления: {self.session.interval:g} с",
+                                  id="refresh-interval"))
+        choices.highlighted = 0
+        choices.focus()
+
+    @on(Button.Pressed, "#settings-close")
+    def close_settings_button(self):
+        self.action_cancel_settings()
+
+    def action_cancel_settings(self):
+        if self._settings_open:
+            self.query_one("#settings").display = False
+            self._settings_open = False
+            self._restore_panel_focus()
+
+    @on(OptionList.OptionSelected, "#settings-list")
+    def edit_interval(self, event: OptionList.OptionSelected):
+        if not self._settings_open:
+            return
+        self.query_one("#interval-editor").display = True
+        editor = self.query_one("#refresh-seconds", Input)
+        editor.value = f"{self.session.interval:g}"
+        editor.focus()
+
+    @on(Input.Submitted, "#refresh-seconds")
+    def save_interval(self, event: Input.Submitted):
+        if not self._settings_open:
+            return
+        error = self.query_one("#settings-error", Static)
+        try:
+            interval = validate_refresh_seconds(float(event.value))
+        except ValueError:
+            error.update("Введите число от 5 до 86400 секунд.")
+            error.display = True
+            return
+        try:
+            write_refresh_seconds(self._settings_path, interval)
+        except OverviewError as exc:
+            error.update(str(exc))
+            error.display = True
+            return
+        self.session.set_interval(interval)
+        self.action_cancel_settings()
 
     def action_refresh(self):
         self.session.refresh()
 
     def action_toggle_epics(self):
-        if self._theme_before_preview is not None:
+        if self._panel_open:
             return
         focused = self.focused if isinstance(self.focused, IssueTable) else None
         selected = focused._key_at(focused.cursor_row) if focused and focused.row_count else None
@@ -383,8 +518,8 @@ class Overview(App):
     def paint_snapshot(self, selected=None):
         if not self.session.view.snapshot:
             return
-        if selected is None and self._theme_before_preview is not None:
-            selected = self._theme_selected
+        if selected is None and self._panel_open:
+            selected = self._panel_selected
         tables = [self.query_one("#epic", IssueTable)] if self.epic_mode else [
             self.query_one("#sprint", IssueTable), self.query_one("#other", IssueTable)]
         focused = self.focused if isinstance(self.focused, IssueTable) else None
@@ -459,7 +594,7 @@ class Overview(App):
                 table.focus()
 
     def on_data_table_row_selected(self, event: IssueTable.RowSelected):
-        if self._theme_before_preview is not None:
+        if self._panel_open:
             return
         shown = event.shown
         if shown is not None:

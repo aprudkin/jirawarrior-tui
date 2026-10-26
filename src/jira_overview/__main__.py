@@ -8,15 +8,15 @@ import tomllib
 
 from .app import Overview
 from .core import Jira, OverviewError
+from .settings import DEFAULT_REFRESH_SECONDS, validate_refresh_seconds
 
 
 def configuration(path: Path):
     try:
         data = tomllib.loads(path.read_text())
         url, variable = data["url"], data["token_env"]
-        interval = data.get("refresh_seconds", 60)
-        if (not isinstance(url, str) or not isinstance(variable, str) or not variable
-                or type(interval) not in (int, float) or not 5 <= interval <= 86400):
+        interval = validate_refresh_seconds(data.get("refresh_seconds", DEFAULT_REFRESH_SECONDS))
+        if not isinstance(url, str) or not isinstance(variable, str) or not variable:
             raise ValueError()
         token = os.environ.get(variable)
         if not token or any(c.isspace() for c in token):

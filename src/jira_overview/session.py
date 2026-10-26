@@ -10,6 +10,7 @@ import time
 from typing import Awaitable, Callable
 
 from .core import Issue, Jira, OverviewError, Snapshot, State
+from .settings import validate_refresh_seconds
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,23 @@ class ReviewSession:
         self._open_busy = False
         self._jira_closed = False
         self._next_tick: float | None = None
+        self._timer_changed = asyncio.Event()
+
+    @property
+    def interval(self) -> float:
+        return self._interval
+
+    def set_interval(self, interval: float) -> None:
+        interval = validate_refresh_seconds(interval)
+        if self._closing:
+            raise RuntimeError("session is closing")
+        if interval == self._interval:
+            return
+        self._interval = interval
+        if self._started:
+            self._next_tick = time.monotonic() + interval
+            self._timer_changed.set()
+            self._replace_view(next_refresh_at=self._scheduled_refresh())
 
     @property
     def view(self) -> ReviewView:
@@ -99,7 +117,14 @@ class ReviewSession:
     async def _timer(self) -> None:
         try:
             while True:
-                await asyncio.sleep(max(0, self._next_tick - time.monotonic()))
+                self._timer_changed.clear()
+                try:
+                    await asyncio.wait_for(self._timer_changed.wait(),
+                                           timeout=max(0, self._next_tick - time.monotonic()))
+                    continue
+                except TimeoutError:
+                    if time.monotonic() < self._next_tick:
+                        continue
                 self._next_tick = time.monotonic() + self._interval
                 self._replace_view(next_refresh_at=self._scheduled_refresh())
                 # Keep the cadence, but don't animate a request that cannot run.

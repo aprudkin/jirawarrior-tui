@@ -38,6 +38,55 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         return ((parsed.hour - now.hour) * 3600 + (parsed.minute - now.minute) * 60 +
                 parsed.second - now.second - now.microsecond / 1_000_000) % 86400
 
+    async def test_changing_interval_reschedules_timer_and_automatic_refresh(self):
+        session = self.make_session()
+        self.addAsyncCleanup(session.aclose)
+        await session.start()
+        await self.wait_until(lambda: not session.view.refreshing)
+        self.server.request_started.clear()
+        self.server.request_gate = True
+        self.server.request_release.set()
+        requests = len(self.server.requests)
+        session.set_interval(5)
+        self.assertEqual(session.interval, 5)
+        self.assertTrue(3 < self.seconds_until(session.view.next_refresh_at) <= 5)
+        self.assertEqual(len(self.server.requests), requests)
+        self.assertTrue(await asyncio.to_thread(self.server.request_started.wait, 7))
+        await self.wait_until(lambda: not session.view.refreshing)
+        self.assertGreater(len(self.server.requests), requests)
+        session.set_interval(3600)
+        self.assertTrue(3598 < self.seconds_until(session.view.next_refresh_at) <= 3600)
+        schedule = session.view.next_refresh_at
+        for invalid in (4, 86401, True, float("nan"), "120"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                session.set_interval(invalid)
+        self.assertEqual(session.interval, 3600)
+        self.assertEqual(session.view.next_refresh_at, schedule)
+
+    async def test_changing_interval_preserves_inflight_request_and_retry_after(self):
+        session = self.make_session()
+        self.addAsyncCleanup(session.aclose)
+        self.server.request_gate = True
+        await session.start()
+        self.assertTrue(await asyncio.to_thread(self.server.request_started.wait, 2))
+        session.set_interval(120)
+        self.assertTrue(session.view.refreshing)
+        self.assertEqual(sum(path.endswith("/myself") for _, path, *_ in self.server.requests), 1)
+        self.server.request_gate = False
+        self.server.request_release.set()
+        await self.wait_until(lambda: not session.view.refreshing)
+        self.assertIsNotNone(session.view.snapshot)
+        self.server.status = 429
+        self.server.retry_after = "18"
+        session.refresh()
+        await self.wait_until(lambda: not session.view.refreshing)
+        session.set_interval(5)
+        self.assertTrue(18 < self.seconds_until(session.view.next_refresh_at) <= 20)
+        requests = len(self.server.requests)
+        session.refresh()
+        await self.wait_until(lambda: not session.view.refreshing)
+        self.assertEqual(len(self.server.requests), requests)
+
     async def test_next_refresh_is_timer_schedule_not_last_success_plus_interval(self):
         session = self.make_session(interval=1.2)
         self.addAsyncCleanup(session.aclose)
