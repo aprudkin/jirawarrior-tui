@@ -85,9 +85,9 @@ class PresentationTests(unittest.IsolatedAsyncioTestCase):
             ordinary.move_cursor(row=0)
             presentation.toggle_epics()
             epic = pilot.app.query_one("#epic", IssueTable)
-            self.assertEqual([epic.get_row_at(row)[0].plain.strip().split()[0]
+            self.assertEqual([epic.get_row_at(row)[0].plain
                               for row in range(epic.row_count)],
-                             ["DEMO-20", "DEMO-1", "DEMO-21"])
+                             ["DEMO-20", "└─ DEMO-1", "DEMO-21"])
             self.assertEqual(epic.shown["20"].key, "DEMO-20")
             presentation.toggle_epics()
             self.assertFalse(presentation.epic_mode)
@@ -200,18 +200,18 @@ class PresentationTests(unittest.IsolatedAsyncioTestCase):
                                 new=True, updated=recent),
                 ))
                 table = app.query_one("#sprint" if sprint else "#other", IssueTable)
-                roots = ["DEMO-3", "  DEMO-31 NEW", "DEMO-4"] if sprint else [
-                    "DEMO-4", "DEMO-3", "  DEMO-31 NEW"]
+                roots = ["DEMO-3", "└─ DEMO-31 NEW", "DEMO-4"] if sprint else [
+                    "DEMO-4", "DEMO-3", "└─ DEMO-31 NEW"]
                 self.assertEqual([table.get_row_at(row)[0].plain for row in range(table.row_count)], [
-                    "DEMO-1 NEW", "  DEMO-14 NEW", "  DEMO-11 NEW", "  DEMO-12 Comment +2",
-                    "  DEMO-13", "DEMO-2 Comment +1", *roots,
+                    "DEMO-1 NEW", "├─ DEMO-14 NEW", "├─ DEMO-11 NEW", "├─ DEMO-12 Comment +2",
+                    "└─ DEMO-13", "DEMO-2 Comment +1", *roots,
                 ])
                 presentation.toggle_epics()
                 epic = app.query_one("#epic", IssueTable)
                 self.assertEqual([epic.get_row_at(row)[0].plain for row in range(epic.row_count)], [
-                    "DEMO-100", "  DEMO-1 NEW", "    DEMO-14 NEW", "    DEMO-11 NEW",
-                    "    DEMO-12 Comment +2", "    DEMO-13", "  DEMO-2 Comment +1",
-                    "  DEMO-3", "    DEMO-31 NEW", "  DEMO-4",
+                    "DEMO-100", "├─ DEMO-1 NEW", "│  ├─ DEMO-14 NEW", "│  ├─ DEMO-11 NEW",
+                    "│  ├─ DEMO-12 Comment +2", "│  └─ DEMO-13", "├─ DEMO-2 Comment +1",
+                    "├─ DEMO-3", "│  └─ DEMO-31 NEW", "└─ DEMO-4",
                 ])
                 self.assertEqual(epic.get_row_at(0)[1].plain, "Task 100 (9)")
                 presentation.toggle_epics()
@@ -232,11 +232,11 @@ class PresentationTests(unittest.IsolatedAsyncioTestCase):
             sprint = app.query_one("#sprint", IssueTable)
             other = app.query_one("#other", IssueTable)
             self.assertEqual([sprint.get_row_at(r)[0].plain for r in range(sprint.row_count)],
-                             ["DEMO-10", "  DEMO-1", "  DEMO-2"])
+                             ["DEMO-10", "├─ DEMO-1", "└─ DEMO-2"])
             self.assertFalse(sprint.shown["10"].tracked)
             self.assertTrue(other.shown["10"].tracked)
             self.assertEqual([other.get_row_at(r)[0].plain for r in range(other.row_count)],
-                             ["DEMO-10 NEW Comment +2", "DEMO-20", "  DEMO-3"])
+                             ["DEMO-10 NEW Comment +2", "DEMO-20", "└─ DEMO-3"])
             for area in ("sprint", "other"):
                 self.assertIn("(2)", str(app.query_one(f"#{area}-heading", Static).render()))
             other.focus()
@@ -261,8 +261,8 @@ class PresentationTests(unittest.IsolatedAsyncioTestCase):
             presentation.toggle_epics()
             epic = app.query_one("#epic", IssueTable)
             self.assertEqual([epic.get_row_at(r)[0].plain for r in range(epic.row_count)], [
-                "DEMO-100", "  DEMO-10 NEW Comment +2", "    DEMO-1", "    DEMO-2",
-                "  DEMO-20", "    DEMO-3",
+                "DEMO-100", "├─ DEMO-10 NEW Comment +2", "│  ├─ DEMO-1", "│  └─ DEMO-2",
+                "└─ DEMO-20", "   └─ DEMO-3",
             ])
             self.assertEqual(epic.get_row_at(0)[1].plain, "Task 100 (4)")
             await pilot.pause()
@@ -270,6 +270,78 @@ class PresentationTests(unittest.IsolatedAsyncioTestCase):
             presentation.toggle_epics()
             await pilot.pause()
             self.assertIs(app.focused, other)
+
+    async def test_tree_branches_stop_at_roots_and_epics_in_both_areas(self):
+        async with PresentationHarness().run_test() as pilot:
+            app = pilot.app
+            presentation = app.query_one(OverviewPresentation)
+            for sprint in (True, False):
+                presentation.present((
+                    review_item(100, epic=True, tracked=False),
+                    review_item(200, epic=True, tracked=False),
+                    review_item(300, epic=True),
+                    review_item(10, sprint=sprint, epic_key="DEMO-100"),
+                    review_item(11, sprint=sprint, epic_key="DEMO-100", parent_key="DEMO-10"),
+                    review_item(12, sprint=sprint, epic_key="DEMO-100", parent_key="DEMO-10"),
+                    review_item(20, sprint=sprint, epic_key="DEMO-100"),
+                    review_item(21, sprint=sprint, epic_key="DEMO-100", parent_key="DEMO-20"),
+                    review_item(30, sprint=sprint, epic_key="DEMO-200"),
+                    review_item(31, sprint=sprint, epic_key="DEMO-200", parent_key="DEMO-30"),
+                ))
+                table = app.query_one("#sprint" if sprint else "#other", IssueTable)
+                self.assertEqual([table.get_row_at(r)[0].plain for r in range(table.row_count)], [
+                    "DEMO-10", "├─ DEMO-11", "└─ DEMO-12", "DEMO-20", "└─ DEMO-21",
+                    "DEMO-30", "└─ DEMO-31",
+                ])
+                presentation.toggle_epics()
+                epic = app.query_one("#epic", IssueTable)
+                self.assertEqual([epic.get_row_at(r)[0].plain for r in range(epic.row_count)], [
+                    "DEMO-100", "├─ DEMO-10", "│  ├─ DEMO-11", "│  └─ DEMO-12",
+                    "└─ DEMO-20", "   └─ DEMO-21", "DEMO-200", "└─ DEMO-30",
+                    "   └─ DEMO-31", "DEMO-300",
+                ])
+                presentation.toggle_epics()
+
+    async def test_filter_and_refresh_rebuild_visible_branches_without_changing_activation(self):
+        async with PresentationHarness().run_test() as pilot:
+            from textual.widgets import Input
+
+            app = pilot.app
+            presentation = app.query_one(OverviewPresentation)
+            items = (
+                review_item(100, epic=True, tracked=False),
+                review_item(10, epic_key="DEMO-100"),
+                review_item(11, epic_key="DEMO-100", parent_key="DEMO-10", summary="Keep"),
+                review_item(12, epic_key="DEMO-100", parent_key="DEMO-10"),
+                review_item(20, epic_key="DEMO-100"),
+            )
+            presentation.present(items)
+            presentation.toggle_epics()
+            epic = app.query_one("#epic", IssueTable)
+            epic.move_cursor(row=2)
+            presentation.query_one("#summary-filter", Input).value = "keep"
+            await pilot.pause()
+            self.assertEqual([epic.get_row_at(r)[0].plain for r in range(epic.row_count)],
+                             ["DEMO-100", "└─ DEMO-10", "   └─ DEMO-11"])
+            self.assertFalse(epic.shown["10"].tracked)
+            self.assertEqual(epic._key_at(epic.cursor_row), "11")
+            added = review_item(13, epic_key="DEMO-100", parent_key="DEMO-10", summary="Keep too")
+            presentation.present((*items, added))
+            self.assertEqual([epic.get_row_at(r)[0].plain for r in range(epic.row_count)],
+                             ["DEMO-100", "└─ DEMO-10", "   ├─ DEMO-11", "   └─ DEMO-13"])
+            self.assertEqual(epic._key_at(epic.cursor_row), "11")
+            epic.action_select_cursor()
+            await pilot.pause()
+            self.assertIs(app.activated, items[2].issue)
+            presentation.query_one("#summary-filter", Input).value = ""
+            await pilot.pause()
+            self.assertEqual([epic.get_row_at(r)[0].plain for r in range(epic.row_count)], [
+                "DEMO-100", "├─ DEMO-10", "│  ├─ DEMO-11", "│  ├─ DEMO-12",
+                "│  └─ DEMO-13", "└─ DEMO-20",
+            ])
+            presentation.present(items)
+            self.assertEqual(epic.get_row_at(3)[0].plain, "│  └─ DEMO-12")
+            self.assertEqual(epic._key_at(epic.cursor_row), "11")
 
     async def test_shared_widths_shrink_and_long_sprint_keeps_one_row_spacing(self):
         async with PresentationHarness().run_test(size=(110, 40)) as pilot:
