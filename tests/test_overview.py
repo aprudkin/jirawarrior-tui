@@ -37,6 +37,7 @@ def issue(i, sprints=None, comments=None, summary=None, *, epic=False, epic_key=
     return {"id": str(i), "key": f"DEMO-{i}", "fields": {
         "summary": summary or f"Synthetic task {i}", "status": {"name": "In Progress"},
         "updated": updated,
+        "issuetype": {"name": "Epic" if epic else "Task", "subtask": bool(parent)},
         "customfield_456": f"Большая работа {i}" if epic else None,
         "customfield_789": epic_key, "parent": {"key": parent} if parent else None,
         "customfield_123": sprints, "comment": {"comments": [], "total": 999}},
@@ -48,6 +49,10 @@ class Server:
         self.issues = [issue(1, [{"id": 1}]), issue(2)]
         self.context_issues = []
         self.sprint_names = {}
+        self.sprint_states = {}
+        # Writes are opt-in for sprint-action tests; ordinary overview remains GET-only.
+        self.sprint_post_status = None
+        self.sprint_post_fail_refresh = False
         self.fields = [{"id": field, "schema": {"custom": "com.pyxis.greenhopper.jira:" + kind}}
                        for field, kind in (("customfield_123", "gh-sprint"),
                                            ("customfield_456", "gh-epic-label"),
@@ -105,13 +110,14 @@ class Server:
                 elif path.startswith("/rest/agile/1.0/sprint/"):
                     sid = int(path.rsplit("/", 1)[1])
                     data = {"id": sid, "name": fixture.sprint_names.get(sid, f"Sprint {sid}"),
-                            "state": "closed" if sid == 3 else "active"}
+                            "state": fixture.sprint_states.get(sid, "closed" if sid == 3 else "active")}
                 elif path.startswith("/rest/api/2/issue/") and path.endswith("/comment"):
                     iid = path.split("/")[-2]
                     data = self.page(next(i for i in fixture.issues if i["id"] == iid)["comments"], "comments", params)
                 elif path.startswith("/rest/api/2/issue/"):
                     key = path.rsplit("/", 1)[1]
-                    data = next((i for i in fixture.issues + fixture.context_issues if i["key"] == key), None)
+                    data = next((i for i in fixture.issues + fixture.context_issues
+                                 if i["key"] == key or i["id"] == key), None)
                     if data is None:
                         self.send_response(404)
                         self.end_headers()
@@ -140,11 +146,26 @@ class Server:
                 return {key: subset, "total": total, "startAt": start_at, "maxResults": fixture.page_size}
 
             def do_POST(self):
-                fixture.requests.append(("POST", self.path, {}, None))
+                path = urlsplit(self.path).path.removeprefix("/jira")
+                payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                fixture.requests.append(("POST", path, payload, self.headers.get("Authorization")))
+                code = fixture.sprint_post_status or 405
+                if code == 204 and path.startswith("/rest/agile/1.0/sprint/") and path.endswith("/issue"):
+                    sid = path.split("/")[-2]
+                    for item in fixture.issues:
+                        if item["id"] in payload.get("issues", []):
+                            item["fields"]["customfield_123"] = [{"id": int(sid)}]
+                    if fixture.sprint_post_fail_refresh:
+                        fixture.fail_path = "/rest/api/2/search"
+                self.send_response(code)
+                self.end_headers()
+
+            def do_PUT(self):
+                fixture.requests.append((self.command, self.path, {}, None))
                 self.send_response(405)
                 self.end_headers()
 
-            do_PUT = do_DELETE = do_PATCH = do_POST
+            do_DELETE = do_PATCH = do_PUT
 
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.http.serve_forever, daemon=True)

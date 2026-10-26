@@ -17,7 +17,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
-from .core import Jira, OverviewError
+from .core import Issue, Jira, OverviewError, Sprint
 from .processes import LockOwner
 from .presentation import IssueActivated, IssueTable, OverviewPresentation
 from .session import ReviewSession
@@ -130,6 +130,49 @@ class OwnerConfirmation(ModalScreen[bool]):
         self.dismiss(event.button.id == "stop-owner")
 
 
+class SprintChoice(ModalScreen[Sprint | None]):
+    """An explicit sprint choice is the write action; cancellation is the default."""
+    BINDINGS = [Binding("escape", "cancel", "Отмена", priority=True),
+                Binding("q", "app.quit", "Выход", priority=True),
+                Binding("ctrl+c", "app.quit", show=False, priority=True)]
+    DEFAULT_CSS = """
+    SprintChoice { align: center middle; }
+    #sprint-dialog {
+        width: 64; max-width: 95%; height: auto; max-height: 90%;
+        border: thick $primary; background: $surface; padding: 1 2;
+    }
+    #sprint-question { height: auto; }
+    #sprint-choices { height: auto; max-height: 10; }
+    #cancel-sprint { height: 3; }
+    """
+
+    def __init__(self, shown: Issue, choices: tuple[Sprint, ...]):
+        super().__init__()
+        self.shown, self.choices = shown, choices
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="sprint-dialog"):
+            yield Static(f"Добавить {self.shown.key} в спринт:\n"
+                         "Enter по спринту сразу изменит Jira.", id="sprint-question", markup=False)
+            yield OptionList(*(Option(f"{sprint.name} (#{sprint.id})", id=sprint.id)
+                               for sprint in self.choices), id="sprint-choices", markup=False)
+            yield Button("Отмена", id="cancel-sprint")
+
+    def on_mount(self):
+        self.query_one("#cancel-sprint", Button).focus()
+
+    def action_cancel(self):
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#cancel-sprint")
+    def cancel_button(self):
+        self.action_cancel()
+
+    @on(OptionList.OptionSelected, "#sprint-choices")
+    def choose(self, event: OptionList.OptionSelected):
+        self.dismiss(next(sprint for sprint in self.choices if sprint.id == event.option_id))
+
+
 class Overview(App):
     TITLE = "Jira — мои задачи"
     ENABLE_COMMAND_PALETTE = False
@@ -142,6 +185,8 @@ class Overview(App):
     Footer { height: 1; }
     """
     BINDINGS = [("q", "quit", "Выход"), ("r", "refresh", "Обновить"),
+                ("a", "add_to_sprint", "Спринт"),
+                Binding("A", "add_to_sprint", show=False),
                 ("e", "toggle_epics", "Эпики"),
                 Binding("е", "toggle_epics", show=False),
                 ("t", "toggle_themes", "Темы"),
@@ -164,6 +209,8 @@ class Overview(App):
         self._settings_open = False
         self._settings_path = state_dir / "settings.json"
         self._owner_dialog: OwnerConfirmation | None = None
+        self._sprint_navigation = False
+        self._sprint_dialog: SprintChoice | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
@@ -208,6 +255,18 @@ class Overview(App):
             self.paint_view()
             self.refresh_bindings()
             view = self.session.view
+            presentation = self.query_one(OverviewPresentation)
+            sprint_active = view.sprint_busy or bool(view.sprint_choices)
+            if sprint_active and not self._sprint_navigation:
+                self._sprint_navigation = True
+                presentation.suspend_navigation()
+            elif not sprint_active and self._sprint_navigation:
+                self._sprint_navigation = False
+                presentation.resume_navigation()
+            if view.sprint_issue is not None and view.sprint_choices and self._sprint_dialog is None:
+                shown = view.sprint_issue
+                self._sprint_dialog = SprintChoice(shown, view.sprint_choices)
+                self.push_screen(self._sprint_dialog, lambda target: self._sprint_decision(shown, target))
             if (view.lock_owner is not None and not view.recovery_busy
                     and self._owner_dialog is None):
                 owner = view.lock_owner
@@ -217,6 +276,13 @@ class Overview(App):
             elif (not view.profile_busy and self._owner_dialog is not None
                   and self._owner_dialog.is_mounted):
                 self._owner_dialog.dismiss(False)
+
+    def _sprint_decision(self, shown: Issue, target: Sprint | None):
+        self._sprint_dialog = None
+        if target is None:
+            self.session.cancel_sprint()
+        else:
+            self.session.add_to_sprint(shown, target)
 
     def _owner_decision(self, owner: LockOwner, confirmed: bool | None):
         self._owner_dialog = None
@@ -237,7 +303,12 @@ class Overview(App):
         return self._theme_before_preview is not None or self._settings_open
 
     def check_action(self, action, parameters):
-        if self._owner_dialog is not None and action not in {"quit", "focus_next", "focus_previous"}:
+        if ((self._owner_dialog is not None or self._sprint_dialog is not None)
+                and action not in {"quit", "focus_next", "focus_previous"}):
+            return False
+        if self.session.view.sprint_busy and action not in {"quit", "refresh"}:
+            return False
+        if action == "add_to_sprint" and self._panel_open:
             return False
         if action == "find_other_instance":
             view = self.session.view
@@ -369,6 +440,16 @@ class Overview(App):
         self.session.set_interval(interval)
         self.action_cancel_settings()
 
+    def action_add_to_sprint(self):
+        if (self._panel_open or self._owner_dialog is not None or self._sprint_dialog is not None
+                or self.session.view.sprint_busy):
+            return
+        shown = self.query_one(OverviewPresentation).selected_issue
+        if shown is None:
+            self.notify("Сначала выберите задачу в обзоре.", title="Спринт", severity="warning")
+            return
+        self.session.add_to_sprint(shown)
+
     def action_refresh(self):
         self.session.refresh()
 
@@ -385,7 +466,7 @@ class Overview(App):
             self.query_one(OverviewPresentation).present(view.items)
         self.paint_connection()
         notice = self.query_one("#notice", Static)
-        message = (view.recovery_notice or view.open_notice or
+        message = (view.recovery_notice or view.sprint_notice or view.open_notice or
                    ("P — найти другой экземпляр и предложить завершение" if view.profile_busy else ""))
         notice.update(message)
         notice.display = bool(message)

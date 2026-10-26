@@ -1,7 +1,7 @@
 [project]
 name = "jirawarrior-tui"
 version = "0.1.0"
-description = "Read-only Jira Server/Data Center overview with local unread markers"
+description = "Jira Server/Data Center overview with local unread markers and sprint add"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

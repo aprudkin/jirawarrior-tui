@@ -9,7 +9,7 @@ from pathlib import Path
 import time
 from typing import Awaitable, Callable
 
-from .core import Issue, Jira, OverviewError, ProfileBusy, Snapshot, State
+from .core import Issue, Jira, OverviewError, ProfileBusy, Snapshot, Sprint, State
 from .processes import LockOwner, find_lock_owner, stop_lock_owner
 from .settings import validate_refresh_seconds
 
@@ -33,6 +33,10 @@ class ReviewView:
     opening: bool = False
     refresh_error: str | None = None
     open_notice: str | None = None
+    sprint_busy: bool = False
+    sprint_notice: str | None = None
+    sprint_issue: Issue | None = None
+    sprint_choices: tuple[Sprint, ...] = ()
     profile_busy: bool = False
     lock_owner: LockOwner | None = None
     recovery_busy: bool = False
@@ -53,6 +57,7 @@ class ReviewSession:
         self._view = ReviewView()
         self._refresh_task: asyncio.Task | None = None
         self._open_task: asyncio.Task | None = None
+        self._sprint_task: asyncio.Task | None = None
         self._timer_task: asyncio.Task | None = None
         self._close_task: asyncio.Task | None = None
         self._recovery_task: asyncio.Task | None = None
@@ -99,6 +104,7 @@ class ReviewSession:
     def refresh(self) -> None:
         self._require_started()
         if (self._closing or self._refresh_busy or self._view.recovery_busy
+                or self._view.sprint_busy or self._view.sprint_choices
                 or self._view.lock_owner is not None):
             return
         self._refresh_busy = True
@@ -107,11 +113,66 @@ class ReviewSession:
 
     def open(self, shown: Issue) -> None:
         self._require_started()
-        if self._closing or self._open_busy:
+        if self._closing or self._open_busy or self._view.sprint_busy or self._view.sprint_choices:
             return
         self._open_busy = True
-        self._replace_view(opening=True, open_notice=None)
+        self._replace_view(opening=True, open_notice=None, sprint_notice=None)
         self._open_task = asyncio.create_task(self._open(shown))
+
+    def cancel_sprint(self) -> None:
+        if not self._closing:
+            self._replace_view(sprint_issue=None, sprint_choices=())
+
+    def add_to_sprint(self, shown: Issue, target: Sprint | None = None) -> None:
+        self._require_started()
+        if self._closing or self._view.sprint_busy:
+            return
+        if self._refresh_busy or self._open_busy:
+            self._replace_view(sprint_notice="Дождитесь завершения текущей операции и повторите A.")
+            return
+        if (self._snapshot is None or self._state is None or not shown.tracked
+                or not any(item.id == shown.id for item in self._snapshot.issues)):
+            self._replace_view(sprint_notice="Сначала выберите задачу в успешно загруженном обзоре.")
+            return
+        if shown.is_epic or shown.is_subtask:
+            self._replace_view(sprint_notice="Эпики и подзадачи нельзя добавлять в спринт.")
+            return
+        choices = self._snapshot.active_sprints
+        if not choices:
+            self._replace_view(sprint_notice="В полном обзоре нет активных спринтов.",
+                               sprint_issue=None, sprint_choices=())
+            return
+        if target is None and len(choices) > 1:
+            self._replace_view(sprint_issue=shown, sprint_choices=choices, sprint_notice=None,
+                               open_notice=None)
+            return
+        if target is None:
+            target = next(iter(choices))
+        if target not in choices:
+            self._replace_view(sprint_notice="Выбранный спринт больше не доступен в обзоре.",
+                               sprint_issue=None, sprint_choices=())
+            return
+        self._replace_view(sprint_busy=True, sprint_notice="Добавление в спринт…", open_notice=None,
+                           sprint_issue=None, sprint_choices=())
+        self._sprint_task = asyncio.create_task(self._add_to_sprint(shown, target))
+
+    async def _add_to_sprint(self, shown: Issue, target: Sprint) -> None:
+        try:
+            added = await self._jira.add_to_sprint(shown, target)
+            if self._closing:
+                return
+            self._replace_view(sprint_notice=("Добавление в спринт подтверждено Jira." if added else
+                                              "Задача уже в выбранном спринте; запись не требуется."))
+            self._refresh_busy = True
+            self._replace_view(refreshing=True)
+            await self._refresh()
+        except OverviewError as exc:
+            if not self._closing:
+                self._replace_view(sprint_notice=str(exc))
+        finally:
+            self._sprint_task = None
+            if not self._closing:
+                self._replace_view(sprint_busy=False, next_refresh_at=self._scheduled_refresh())
 
     def find_lock_owner(self) -> None:
         self._require_started()
@@ -270,10 +331,12 @@ class ReviewSession:
             raise asyncio.CancelledError
 
     async def _cleanup(self) -> None:
-        for task in (self._timer_task, self._refresh_task, self._open_task, self._recovery_task):
+        pending = (self._timer_task, self._refresh_task, self._open_task,
+                   self._recovery_task, self._sprint_task)
+        for task in pending:
             if task is not None and task is not asyncio.current_task():
                 task.cancel()
-        tasks = [task for task in (self._timer_task, self._refresh_task, self._open_task, self._recovery_task)
+        tasks = [task for task in pending
                  if task is not None and task is not asyncio.current_task()]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -284,4 +347,5 @@ class ReviewSession:
             self._jira_closed = True
             await self._jira.close()
         self._view = replace(self._view, refreshing=False, opening=False, recovery_busy=False,
+                             sprint_busy=False, sprint_issue=None, sprint_choices=(),
                              lock_owner=None, next_refresh_at=None, closed=True)

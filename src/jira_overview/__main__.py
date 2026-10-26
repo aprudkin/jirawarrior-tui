@@ -48,7 +48,7 @@ async def check(jira):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Read-only Jira TUI; локальные отметки просмотра")
+    parser = argparse.ArgumentParser(description="Jira TUI; локальные отметки просмотра и добавление в спринт")
     parser.add_argument("--config", type=Path, default=Path(os.environ.get(
         "XDG_CONFIG_HOME", Path.home() / ".config")) / "jira-overview/config.toml")
     parser.add_argument("--check", action="store_true", help="Проверить GET-загрузку без UI и записи baseline")

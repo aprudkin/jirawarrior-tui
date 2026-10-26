@@ -240,6 +240,14 @@ class OverviewPresentation(Vertical):
         self.call_after_refresh(self.fit_sprint_area)
 
     @property
+    def selected_issue(self) -> Issue | None:
+        """The immutable shown row under the cursor, only while tables own focus."""
+        table = self.app.focused
+        if self._suspended or not isinstance(table, IssueTable) or not table.row_count:
+            return None
+        return table.shown.get(table._key_at(table.cursor_row))
+
+    @property
     def navigation_suspended(self) -> bool:
         return self._suspended
 

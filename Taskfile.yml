@@ -4,7 +4,7 @@ version: '3'
 tasks:
   open:jira:
     aliases: ['jira']
-    desc: Open the installed read-only Jira TUI
+    desc: Open the installed Jira TUI
     dir: '{{.TASKFILE_DIR}}'
     cmds:
       - jirawarrior
@@ -13,7 +13,7 @@ tasks:
 
   check:jira:
     aliases: ['jira:check']
-    desc: Check the installed read-only Jira connection without changing state
+    desc: Check the installed Jira connection with GET only, without changing state
     dir: '{{.TASKFILE_DIR}}'
     cmds:
       - jirawarrior --check

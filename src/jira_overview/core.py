@@ -1,4 +1,4 @@
-"""Read-only Jira boundary and transactional, profile-local unread state."""
+"""Jira reads, one verified sprint-add operation, and profile-local unread state."""
 from __future__ import annotations
 
 import asyncio
@@ -85,6 +85,13 @@ class Issue:
     # observed version of the same issue after a concurrent refresh.
     tracked: bool = True
     updated: datetime | None = None
+    is_subtask: bool = False
+
+
+@dataclass(frozen=True)
+class Sprint:
+    id: str
+    name: str
 
 
 @dataclass(frozen=True)
@@ -92,6 +99,7 @@ class Snapshot:
     user_id: str
     display_name: str
     issues: tuple[Issue, ...]
+    active_sprints: tuple[Sprint, ...] = ()
 
 
 class Jira:
@@ -108,9 +116,23 @@ class Jira:
             timeout=httpx.Timeout(15.0), follow_redirects=False,
         )
         self.retry_at = 0.0
+        self._unverified_sprint_issue: Issue | None = None
 
     async def close(self):
         await self.client.aclose()
+
+    def _rate_limit(self, response: httpx.Response) -> None:
+        retry = response.headers.get("Retry-After", "60")
+        try:
+            delay = float(retry)
+        except ValueError:
+            try:
+                delay = parsedate_to_datetime(retry).timestamp() - time.time()
+            except (ValueError, TypeError, OverflowError):
+                delay = 60
+        delay = max(1, delay) if math.isfinite(delay) else 60
+        self.retry_at = time.monotonic() + delay
+        raise RateLimited(delay)
 
     async def get(self, path: str, params: dict | None = None):
         if time.monotonic() < self.retry_at:
@@ -125,17 +147,7 @@ class Jira:
         if code == 403:
             raise OverviewError("Недостаточно прав Jira (403).")
         if code == 429:
-            retry = response.headers.get("Retry-After", "60")
-            try:
-                delay = float(retry)
-            except ValueError:
-                try:
-                    delay = parsedate_to_datetime(retry).timestamp() - time.time()
-                except (ValueError, TypeError, OverflowError):
-                    delay = 60
-            delay = max(1, delay) if math.isfinite(delay) else 60
-            self.retry_at = time.monotonic() + delay
-            raise RateLimited(delay)
+            self._rate_limit(response)
         if 300 <= code < 400:
             raise OverviewError("Перенаправление Jira отклонено; проверьте адрес конфигурации.")
         if code != 200:
@@ -180,9 +192,7 @@ class Jira:
         except (KeyError, TypeError, ValueError, AttributeError):
             raise OverviewError("Неполный или несовместимый ответ Jira; обновление отклонено.") from None
 
-    async def _snapshot(self) -> Snapshot:
-        me = await self.get("/rest/api/2/myself")
-        user_id = identity(me)
+    async def _software_fields(self) -> tuple[str, str, str]:
         fields = await self.get("/rest/api/2/field")
         if not isinstance(fields, list):
             raise ValueError()
@@ -194,7 +204,12 @@ class Jira:
             if len(matches) != 1:
                 raise OverviewError(f"Не удалось однозначно определить поле {label} по метаданным Jira.")
             detected.append(matches[0])
-        sprint_field, epic_name_field, epic_link_field = detected
+        return detected[0], detected[1], detected[2]
+
+    async def _snapshot(self) -> Snapshot:
+        me = await self.get("/rest/api/2/myself")
+        user_id = identity(me)
+        sprint_field, epic_name_field, epic_link_field = await self._software_fields()
         context_fields = "summary,status,parent,updated," + epic_name_field + "," + epic_link_field
         raw = await self.pages("/rest/api/2/search", "issues", {
             "jql": 'assignee = currentUser() AND resolution = Unresolved '
@@ -268,6 +283,7 @@ class Jira:
         memberships = {item["key"]: None if is_epic(item) else await parent_epic(item)
                        for item in raw}
         sprint_cache: dict[str, dict] = {}
+        active_sprints: dict[str, Sprint] = {}
         issues = []
         for item in raw:
             data = item["fields"]
@@ -297,7 +313,9 @@ class Jira:
                 if state not in ("active", "closed", "future"):
                     raise ValueError()
                 if state == "active":
-                    sprints.append(plain(required_text(metadata, "name")) + " (#" + sid + ")")
+                    sprint_name = plain(required_text(metadata, "name"))
+                    active_sprints[sid] = Sprint(sid, sprint_name)
+                    sprints.append(sprint_name + " (#" + sid + ")")
             issue_id = required_text(item, "id")
             key = required_text(item, "key")
             if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*-\d+", key) or not issue_id.isdigit():
@@ -314,7 +332,8 @@ class Jira:
             issues.append(Issue(issue_id, key, plain(required_text(data, "summary")),
                                 plain(required_text(data["status"], "name")),
                                 tuple(sorted(set(sprints))), frozenset(all_ids), frozenset(foreign_ids),
-                                is_epic(item), memberships[key], updated=_updated_at(data.get("updated"))))
+                                is_epic(item), memberships[key], updated=_updated_at(data.get("updated")),
+                                is_subtask=bool(data.get("parent"))))
         own_keys = {item["key"] for item in raw}
         for key in sorted(set(memberships.values()) - {None} - own_keys):
             item = by_key[key]
@@ -324,7 +343,115 @@ class Jira:
                                 frozenset(), frozenset(), is_epic=True, tracked=False,
                                 updated=_updated_at(data.get("updated"))))
         return Snapshot(user_id, plain(required_text(me, "displayName")),
-                        tuple(sorted(issues, key=lambda i: i.key)))
+                        tuple(sorted(issues, key=lambda i: i.key)),
+                        tuple(active_sprints[sid] for sid in sorted(active_sprints)))
+
+    async def _sprint_issue_state(self, issue: Issue) -> list[tuple[str, str]]:
+        # The standard custom field includes ALL active/future memberships,
+        # unlike Agile's single `sprint` object. Never infer backlog from absence.
+        try:
+            sprint_field, epic_field, _ = await self._software_fields()
+            data = await self.get("/rest/api/2/issue/" + quote(issue.id, safe=""),
+                                  {"fields": f"{sprint_field},{epic_field},issuetype,parent"})
+            if data["id"] != issue.id or data["key"] != issue.key:
+                raise ValueError()
+            fields = data["fields"]
+            if fields["issuetype"]["subtask"] is not False or fields[epic_field] is not None:
+                raise OverviewError("Эпики и подзадачи нельзя добавлять в спринт.")
+            if fields.get("parent") is not None:
+                raise OverviewError("Эпики и подзадачи нельзя добавлять в спринт.")
+            values = fields[sprint_field]
+            if values is None:
+                values = []
+            if not isinstance(values, list):
+                raise ValueError()
+            memberships = []
+            for sprint in values:
+                if isinstance(sprint, dict):
+                    sid = str(sprint["id"])
+                elif isinstance(sprint, str):
+                    match = re.search(r"\bid=(\d+)(?:,|\])", sprint)
+                    if match is None:
+                        raise ValueError()
+                    sid = match[1]
+                else:
+                    raise ValueError()
+                state, _ = await self._sprint_state(sid)
+                memberships.append((sid, state))
+            return memberships
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise OverviewError("Jira вернула неполные сведения о выбранной задаче или спринтах.") from None
+
+    async def _sprint_state(self, sprint_id: str) -> tuple[str, str]:
+        if not re.fullmatch(r"[0-9]+", sprint_id):
+            raise OverviewError("Невозможно проверить целевой спринт Jira.")
+        metadata = await self.get("/rest/agile/1.0/sprint/" + quote(sprint_id, safe=""))
+        sid = metadata.get("id") if isinstance(metadata, dict) else None
+        if type(sid) is int:
+            sid = str(sid)
+        if sid != sprint_id:
+            raise OverviewError("Jira вернула неполные сведения о целевом спринте.")
+        name = metadata.get("name")
+        state = metadata.get("state")
+        if not isinstance(name, str) or not name or state not in ("active", "future", "closed"):
+            raise OverviewError("Jira вернула неполные сведения о целевом спринте.")
+        return state, plain(name)
+
+    async def add_to_sprint(self, shown: Issue, target: Sprint) -> bool:
+        """Add one shown ordinary issue to an active sprint and verify by readback."""
+        if (not re.fullmatch(r"[0-9]+", shown.id)
+                or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*-[0-9]+", shown.key)
+                or not re.fullmatch(r"[0-9]+", target.id)
+                or shown.is_epic or shown.is_subtask or not shown.tracked):
+            raise OverviewError("Выбранную задачу или спринт нельзя добавить.")
+        if self._unverified_sprint_issue is not None:
+            try:
+                await self._sprint_issue_state(self._unverified_sprint_issue)
+            except OverviewError:
+                raise OverviewError("Исход предыдущего добавления неизвестен; новая запись не отправлена.") from None
+            self._unverified_sprint_issue = None
+        state, name = await self._sprint_state(target.id)
+        if state != "active" or name != target.name:
+            raise OverviewError("Целевой спринт больше не активен или изменился.")
+        memberships = await self._sprint_issue_state(shown)
+        if (target.id, "active") in memberships:
+            return False
+        for sprint_id, membership_state in memberships:
+            if membership_state in ("active", "future"):
+                raise OverviewError("Задача уже находится в другом активном или будущем спринте.")
+        try:
+            if time.monotonic() < self.retry_at:
+                raise RateLimited(self.retry_at - time.monotonic())
+            # Keep uncertainty even if cancellation interrupts the request/readback.
+            # ReviewSession serializes callers; never silently replay this POST.
+            self._unverified_sprint_issue = shown
+            response = await self.client.post(
+                self.url + "/rest/agile/1.0/sprint/" + quote(target.id, safe="") + "/issue",
+                json={"issues": [shown.id]},
+            )
+        except httpx.HTTPError:
+            response = None
+        if (response is not None and response.status_code < 500
+                and response.status_code not in (200, 204)):
+            self._unverified_sprint_issue = None
+        if response is not None and response.status_code == 401:
+            raise OverviewError("Авторизация истекла или токен неверен (401).")
+        if response is not None and response.status_code == 403:
+            raise OverviewError("Недостаточно прав Jira (403).")
+        if response is not None and response.status_code == 429:
+            self._rate_limit(response)
+        if response is not None and 300 <= response.status_code < 400:
+            raise OverviewError("Перенаправление Jira отклонено; проверьте адрес конфигурации.")
+        if response is not None and response.status_code not in (204, 200) and response.status_code < 500:
+            raise OverviewError(f"Ошибка Jira HTTP {response.status_code}; результат операции не подтверждён.")
+        try:
+            after = await self._sprint_issue_state(shown)
+        except (OverviewError, RateLimited):
+            raise OverviewError("Результат добавления неизвестен; обновите задачу перед повтором.") from None
+        self._unverified_sprint_issue = None
+        if (target.id, "active") in after:
+            return True
+        raise OverviewError("Jira не подтвердила добавление; проверьте задачу перед повтором.")
 
     def browser_url(self, issue: Issue) -> str:
         return self.url + "/browse/" + quote(issue.key, safe="")
