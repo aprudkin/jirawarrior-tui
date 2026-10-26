@@ -51,6 +51,7 @@ class Server:
                                            ("customfield_789", "gh-epic-link"))]
         self.fail_path = None
         self.user = "me"
+        self.display_name = "Synthetic User"
         self.requests = []
         self.page_size = 1
         self.status = 200
@@ -93,7 +94,7 @@ class Server:
                     self.wfile.write(b"SECRET RESPONSE BODY")
                     return
                 if path == "/rest/api/2/myself":
-                    data = {"key": fixture.user, "displayName": "Synthetic User"}
+                    data = {"key": fixture.user, "displayName": fixture.display_name}
                 elif path == "/rest/api/2/field":
                     data = fixture.fields
                 elif path == "/rest/api/2/search":
@@ -745,6 +746,31 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             saved = "".join(p.read_text() for p in self.state_dir.glob("*.json"))
             for sensitive in (TOKEN, BODY, "Synthetic task", "Synthetic User", self.server.url):
                 self.assertNotIn(sensitive, saved)
+
+    async def test_header_shows_jira_warrior_and_name_without_user_id(self):
+        async with self.running() as (app, pilot):
+            self.assertEqual(self.status(app),
+                             f"Jira Warrior: Synthetic User | Обновлено {app.session.view.updated_at}")
+            self.assertEqual(app.snapshot.user_id, "key:me")
+            await pilot.press("e")
+            self.assertTrue(self.status(app).startswith("Jira Warrior: Synthetic User | "))
+            self.server.display_name = "[bold]Тестовый User[/bold]\x1b\u202e"
+            await self.refresh(app, pilot)
+            prefix = "Jira Warrior: [bold]Тестовый User[/bold]   | "
+            self.assertEqual(self.status(app), prefix + f"Обновлено {app.session.view.updated_at}")
+            self.assertNotIn("key:me", self.status(app))
+            updated_at = app.session.view.updated_at
+            self.server.status = 500
+            await self.refresh(app, pilot)
+            self.assertTrue(self.status(app).startswith(prefix + f"УСТАРЕЛО: {updated_at} | "))
+            self.assertIn("HTTP 500", self.status(app))
+            self.assertNotIn("key:me", self.status(app))
+            self.server.status = 200
+            await self.refresh(app, pilot)
+            await pilot.press("e")
+            self.assertEqual(self.status(app), prefix + f"Обновлено {app.session.view.updated_at}")
+            self.assertEqual(app.snapshot.user_id, "key:me")
+            self.assertEqual(self.opened, [])
 
     async def test_weekly_sprint_heading_is_short_and_refreshes(self):
         self.server.sprint_names = {1: "DEMO-2026-W43"}

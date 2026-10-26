@@ -14,7 +14,7 @@ from textual.containers import Vertical
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Footer, Static
 
-from .core import Issue, Jira, plain
+from .core import Issue, Jira
 from .session import ReviewItem, ReviewSession
 
 
@@ -255,7 +255,7 @@ class Overview(App):
             freshness = (f"УСТАРЕЛО: {view.updated_at} | {view.refresh_error}"
                          if view.refresh_error else f"Обновлено {view.updated_at}")
             self.query_one("#connection", Static).update(
-                f"{view.display_name} ({plain(view.user_id or '')}) | {freshness}")
+                f"Jira Warrior: {view.display_name} | {freshness}")
         elif view.refresh_error:
             self.query_one("#connection", Static).update(f"НЕТ УСПЕШНОЙ ЗАГРУЗКИ | {view.refresh_error}")
         notice = self.query_one("#notice", Static)
