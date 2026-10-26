@@ -978,7 +978,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
         def run_check():
             with patch("jira_overview.__main__.configuration", side_effect=lambda _: (
                     Jira(self.server.url, TOKEN, allow_local_http=True), self.state_dir, 60)), \
-                    patch("sys.argv", ["jira-overview", "--check", "--config", "synthetic.toml"]):
+                    patch("sys.argv", ["jirawarrior", "--check", "--config", "synthetic.toml"]):
                 return main()
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

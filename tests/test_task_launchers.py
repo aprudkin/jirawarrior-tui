@@ -36,7 +36,7 @@ class TaskLaunchers(unittest.TestCase):
         (self.caller / "Taskfile.yml").write_text('{"version":"3","tasks":{}}')
         binary = root / "bin"
         binary.mkdir()
-        command = binary / "jira-overview"
+        command = binary / "jirawarrior"
         command.write_text(
             "#!/usr/bin/env python3\n"
             "import json, os, sys\n"
@@ -46,10 +46,11 @@ class TaskLaunchers(unittest.TestCase):
             "sys.exit(int(os.environ.get('PROBE_EXIT', '0')))\n"
         )
         command.chmod(0o700)
-        # A tool install needs uv only at installation time, not to launch the CLI.
-        uv = binary / "uv"
-        uv.write_text("#!/bin/sh\necho 'Unexpected uv dependency at launch' >&2\nexit 99\n")
-        uv.chmod(0o700)
+        # Launchers use the installed canonical command, not uv or the removed name.
+        for name in ("uv", "jira-overview"):
+            unexpected = binary / name
+            unexpected.write_text(f"#!/bin/sh\necho 'Unexpected {name} at launch' >&2\nexit 99\n")
+            unexpected.chmod(0o700)
         self.env = {
             "HOME": str(home), "PATH": f"{binary}:{os.environ['PATH']}",
             "SYNTHETIC_TOKEN": "synthetic-environment-only",

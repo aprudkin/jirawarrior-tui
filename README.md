@@ -3,21 +3,25 @@
 Read-only TUI для своих незавершённых задач в **Jira Server/Data Center**:
 две постоянно видимые области **«Текущий спринт»** и **«Остальные мои задачи»**,
 локальные метки `NEW` и `Comment +N`, обновление и открытие задачи в браузере.
-Команда остаётся **`jira-overview`**. Интеграции с Taskwarrior нет.
+Основная команда — **`jirawarrior`**, короткий алиас — **`jw`**.
+Команда `jira-overview` удалена. Интеграции с Taskwarrior нет.
 
 Первый выпуск поддерживает **только macOS**, Python **3.11+**,
-[uv](https://docs.astral.sh/uv/) и Git для установки из тега.
+[uv](https://docs.astral.sh/uv/) и Git для установки из репозитория.
 Linux, Windows, Jira Cloud, Basic auth, cookies, запись в Jira и командные
 дашборды не поддерживаются. Нужен Jira Software с доступным Agile API и Bearer PAT;
 наличие PAT в Server/DC само по себе не гарантирует совместимость всех API.
 Приложение не устанавливает фоновые службы и не меняет настройки системы.
 
-## Установка из релиза
+## Установка
 
-Установите опубликованный тег **v0.1.0** в отдельное uv tool-окружение:
+Команды `jirawarrior` и `jw` доступны в текущей **main**, пока без нового
+тега/release. Опубликованный тег **v0.1.0** содержит только прежнюю команду
+`jira-overview`. Установите текущую main в отдельное uv tool-окружение
+(если приложение уже установлено, эта команда обновит его):
 
 ```sh
-uv tool install --python 3.12 'git+https://github.com/aprudkin/jirawarrior-tui.git@v0.1.0'
+uv tool install --force --refresh-package jirawarrior-tui --python 3.12 'git+https://github.com/aprudkin/jirawarrior-tui.git@main'
 ```
 
 Python 3.12 выбран для воспроизводимого сценария первого выпуска; uv при
@@ -26,12 +30,14 @@ Python 3.12 выбран для воспроизводимого сценари�
 и откройте новый терминал. После установки из любого каталога:
 
 ```sh
-jira-overview --help
+jirawarrior --help
 ```
+
+Для короткого запуска используйте `jw`: это тот же CLI с теми же аргументами.
 
 Textual **6.6.0** и HTTPX **0.28.1** закреплены в метаданных пакета.
 `uv.lock` закрепляет транзитивные зависимости **для разработки через `uv sync --frozen`**;
-`uv tool install` из тега использует метаданные пакета, а не этот lockfile.
+`uv tool install` из Git использует метаданные пакета, а не этот lockfile.
 PyPI/Homebrew-публикации нет. См. [описание выпуска](CHANGELOG.md).
 
 ## Конфигурация и PAT
@@ -76,7 +82,7 @@ read -rs 'MY_JIRA_TOKEN?Bearer PAT: ' && export MY_JIRA_TOKEN
 Проверка соединения, включая все страницы комментариев, **без UI и записи состояния**:
 
 ```sh
-jira-overview --check
+jirawarrior --check
 ```
 
 Она печатает только итог и количества: без URL, имени пользователя, ключей
@@ -84,16 +90,16 @@ jira-overview --check
 Открыть TUI:
 
 ```sh
-jira-overview
+jirawarrior
 ```
 
 ## Необязательные `t jira` / `t jira:check`
 
 Go Task не нужен для прямого запуска. Если он уже установлен, сохраните
-[Taskfile.yml](Taskfile.yml) из того же тега вне репозитория:
+[Taskfile.yml](Taskfile.yml) из текущей main вне репозитория:
 
 ```sh
-curl -fL --create-dirs --output "$HOME/.config/jira-overview/Taskfile.yml" https://raw.githubusercontent.com/aprudkin/jirawarrior-tui/v0.1.0/Taskfile.yml
+curl -fL --create-dirs --output "$HOME/.config/jira-overview/Taskfile.yml" https://raw.githubusercontent.com/aprudkin/jirawarrior-tui/main/Taskfile.yml
 ```
 
 Добавьте или замените **только** запись `jira` в существующем `includes`
@@ -107,7 +113,7 @@ includes:
     flatten: true
 ```
 
-Обёртки вызывают установленный `jira-overview` / `jira-overview --check`,
+Обёртки вызывают установленный `jirawarrior` / `jirawarrior --check`,
 наследуют окружение, сохраняют TTY и не зависят от checkout или `uv run`.
 Канонические имена — `open:jira` / `check:jira`, алиасы — `jira` / `jira:check`.
 Для zsh короткий глобальный вызов с сохранением кода ошибки задаётся так:
@@ -123,8 +129,11 @@ alias t='noglob command task --global --exit-code'
 
 ## Переход с ossetup
 
-Команда, Python-модуль `jira_overview`, TOML, XDG-переменные и каталог состояния
-`jira-overview` сохранены. Меняется только имя дистрибутива:
+В текущей main запуск переименован: вместо `jira-overview` используйте
+`jirawarrior` или `jw`. Старый исполняемый файл больше не устанавливается;
+обновите вызывающие его скрипты и ранее скопированный Taskfile по инструкции выше.
+Python-модуль `jira_overview`, TOML, XDG-переменные и каталог состояния
+`jira-overview` сохранены. При переносе из ossetup имя дистрибутива изменилось:
 `ossetup-jira-overview` → `jirawarrior-tui`. **Не удаляйте состояние ради переноса**:
 baseline, `NEW` и непросмотренные комментарии не требуют миграции или сброса.
 Завершите старый экземпляр перед запуском нового — профиль защищён lock.

@@ -7,7 +7,7 @@ tasks:
     desc: Open the installed read-only Jira TUI
     dir: '{{.TASKFILE_DIR}}'
     cmds:
-      - jira-overview
+      - jirawarrior
     interactive: true
     silent: true
 
@@ -16,5 +16,5 @@ tasks:
     desc: Check the installed read-only Jira connection without changing state
     dir: '{{.TASKFILE_DIR}}'
     cmds:
-      - jira-overview --check
+      - jirawarrior --check
     silent: true
