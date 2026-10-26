@@ -693,7 +693,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.settled(app, pilot)
             self.assertEqual(self.opened, [self.server.url + "/browse/DEMO-4"])
             await pilot.press("ctrl+home")
-            await pilot.click("#sprint", offset=(5, table.header_height))
+            await pilot.click("#sprint", offset=(5, table.header_height), control=True)
             await self.settled(app, pilot)
             self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-1")
 
@@ -1129,18 +1129,52 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(table.cursor_row, len(expected) - 1)
             self.assertIn("Comment +1", self.visible(app))
             await pilot.press("ctrl+home")
-            for y in (0, table.header_height + table.row_count):
-                await pilot.click("#other", offset=(5, y))
-                await self.settled(app, pilot)
-                self.assertEqual(len(self.opened), 1)
-                self.assertIn("Comment +1", self.visible(app))
-            await pilot.click("#other", offset=(5, table.header_height))
+            for control in (False, True):
+                for y in (0, table.header_height + table.row_count):
+                    await pilot.click("#other", offset=(5, y), control=control)
+                    await self.settled(app, pilot)
+                    self.assertEqual(len(self.opened), 1)
+                    self.assertIn("Comment +1", self.visible(app))
+            await pilot.click("#other", offset=(5, table.header_height), control=True)
             await self.settled(app, pilot)
             self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-1")
             self.assertNotIn("Comment +1", self.visible(app))
             self.assertEqual(table.cursor_row, 1)
 
-    async def test_enter_and_real_mouse_click_acknowledge(self):
+    async def test_mouse_requires_control_in_both_areas(self):
+        async with self.running() as (app, pilot):
+            self.server.issues.extend([issue(3, [{"id": 1}]), issue(4)])
+            await self.refresh(app, pilot)
+            profile = next(self.state_dir.glob("*.json"))
+            requests = len(self.server.requests)
+            for area, iid in (("sprint", "3"), ("other", "4")):
+                table = app.query_one("#" + area, IssueTable)
+                row = next(n for n in range(table.row_count) if table._key_at(n) == iid)
+                saved = profile.read_bytes()
+                for modifiers in ({}, {"times": 2}, {"shift": True}, {"meta": True}):
+                    table.move_cursor(row=table.row_count - 1)
+                    await pilot.click("#" + area, offset=(5, table.header_height + row), **modifiers)
+                    await self.settled(app, pilot)
+                    self.assertIs(app.focused, table)
+                    self.assertEqual(table._key_at(table.cursor_row), iid)
+                    self.assertIn("NEW", str(table.get_row_at(table.cursor_row)))
+                    self.assertEqual(profile.read_bytes(), saved)
+                    self.assertEqual(len(self.opened), 0 if area == "sprint" else 2)
+                # Browser refusal on Ctrl+click must not acknowledge the shown issue.
+                self.browser_ok = False
+                await pilot.click("#" + area, offset=(5, table.header_height + row), control=True)
+                await self.settled(app, pilot)
+                self.assertEqual(profile.read_bytes(), saved)
+                self.assertIn("NEW", str(table.get_row_at(table.cursor_row)))
+                self.browser_ok = True
+                await pilot.click("#" + area, offset=(5, table.header_height + row), control=True)
+                await self.settled(app, pilot)
+                self.assertEqual(self.opened[-2:], [self.server.url + "/browse/DEMO-" + iid] * 2)
+                self.assertEqual(table._key_at(table.cursor_row), iid)
+                self.assertNotIn("NEW", str(table.get_row_at(table.cursor_row)))
+                self.assertEqual(len(self.server.requests), requests)
+
+    async def test_enter_and_control_click_acknowledge(self):
         async with self.running() as (app, pilot):
             self.server.issues[0]["comments"].append(comment(12))
             await self.refresh(app, pilot)
@@ -1149,8 +1183,15 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.opened, [self.server.url + "/browse/DEMO-1"])
             self.assertNotIn("Comment", self.visible(app))
             self.assertEqual(self.notice(app), "")
+            self.server.issues[1]["comments"].append(comment(21))
+            await self.refresh(app, pilot)
             await pilot.click("#other", offset=(5, 1))
             await self.settled(app, pilot)
+            self.assertEqual(len(self.opened), 1)
+            self.assertIn("Comment +1", self.visible(app))
+            await pilot.click("#other", offset=(5, 1), control=True)
+            await self.settled(app, pilot)
+            self.assertNotIn("Comment", self.visible(app))
             self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-2")
             self.assertEqual(len(self.opened), 2)
             self.assertEqual(self.notice(app), "")
@@ -1512,14 +1553,22 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.settled(app, pilot)
             self.assertNotIn("NEW", str(table.get_row_at(own_row)))
             self.assertEqual(table._key_at(table.cursor_row), "102")
-            # Mouse opens the context epic too, but column headings never open it.
-            await pilot.click("#epic", offset=(4, 1))
+            # Plain clicks only select; Ctrl+click also opens a context epic.
+            await pilot.click("#epic", offset=(4, 1), control=True)
             await self.settled(app, pilot)
             opened = len(self.opened)
             table.scroll_to(y=0, animate=False)
             await pilot.pause()
+            saved = next(self.state_dir.glob("*.json")).read_bytes()
+            await pilot.click("#epic", offset=(4, 0), control=True)
             await pilot.click("#epic", offset=(4, context_row + 1))
             await self.settled(app, pilot)
+            self.assertEqual(len(self.opened), opened)
+            self.assertEqual(table._key_at(table.cursor_row), "200")
+            self.assertEqual(next(self.state_dir.glob("*.json")).read_bytes(), saved)
+            await pilot.click("#epic", offset=(4, context_row + 1), control=True)
+            await self.settled(app, pilot)
+            self.assertEqual(next(self.state_dir.glob("*.json")).read_bytes(), saved)
             self.assertEqual(len(self.opened), opened + 1)
             self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-200")
 

@@ -167,8 +167,9 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
                     break
             self.assertEqual(app.theme, "textual-light")
             self.assertIsInstance(app.focused, OptionList)
-            await pilot.click("#other", offset=(4, 1))
-            self.assertEqual(self.opened, [])
+            for control in (False, True):
+                await pilot.click("#other", offset=(4, 1), control=control)
+                self.assertEqual(self.opened, [])
             await pilot.press("escape")
             other = app.query_one("#other", IssueTable)
             self.assertIs(app.focused, other)

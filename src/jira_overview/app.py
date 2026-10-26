@@ -10,7 +10,7 @@ from typing import Awaitable, Callable
 
 from rich.spinner import Spinner
 from rich.text import Text
-from textual import on
+from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -97,6 +97,21 @@ class IssueTable(DataTable):
         super().__init__(cursor_type="row", zebra_stripes=True,
                          cursor_foreground_priority="renderable", **kwargs)
         self.shown: dict[str, Issue] = {}
+
+    def _on_click(self, event: events.Click) -> None:
+        # Selection is not activation: only Ctrl+left-click opens an issue.
+        # Textual mouse "meta" is Alt/Option, not macOS Command.
+        event.stop()
+        event.prevent_default()
+        meta = event.style.meta
+        if event.button != 1 or "row" not in meta or "column" not in meta:
+            return
+        coordinate = Coordinate(meta["row"], meta["column"])
+        if not self.is_valid_coordinate(coordinate):
+            return
+        self.move_cursor(row=coordinate.row, column=coordinate.column)
+        if event.ctrl:
+            self.action_select_cursor()
 
     def on_resize(self):
         if self.id == "sprint":

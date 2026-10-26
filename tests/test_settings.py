@@ -185,8 +185,9 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             await self.settled(app, pilot)
             self.assertEqual(editor.value, "2")
             self.assertIs(app.focused, editor)
-            await pilot.click("#other", offset=(4, 1))
-            self.assertEqual(self.opened, [])
+            for control in (False, True):
+                await pilot.click("#other", offset=(4, 1), control=control)
+                self.assertEqual(self.opened, [])
             await pilot.press("escape")
             other = app.query_one("#other", IssueTable)
             self.assertIs(app.focused, other)
