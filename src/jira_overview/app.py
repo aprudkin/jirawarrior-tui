@@ -189,8 +189,8 @@ class SettingsPanel(Vertical):
             yield Button("×", id="settings-close", tooltip="Закрыть настройки")
         yield OptionList(id="settings-list", markup=False, compact=True)
         with Vertical(id="interval-editor"):
-            yield Static("Интервал в секундах (5–86400)", id="interval-label")
-            yield IntervalInput(id="refresh-seconds", placeholder="3600", select_on_focus=True)
+            yield Static("Интервал в минутах (1/12–1440)", id="interval-label")
+            yield IntervalInput(id="refresh-minutes", placeholder="60", select_on_focus=True)
             yield Static("", id="settings-error", markup=False)
         yield Static("Enter изменить / сохранить\nEsc / s / × отменить", id="settings-hints")
 
@@ -416,7 +416,7 @@ class Overview(App):
         self.query_one("#settings-error").display = False
         choices = self.query_one("#settings-list", OptionList)
         choices.clear_options()
-        choices.add_option(Option(f"Интервал обновления: {self.session.interval:g} с",
+        choices.add_option(Option(f"Интервал обновления: {self.session.interval / 60:g} мин",
                                   id="refresh-interval"))
         choices.highlighted = 0
         choices.focus()
@@ -436,19 +436,22 @@ class Overview(App):
         if not self._settings_open:
             return
         self.query_one("#interval-editor").display = True
-        editor = self.query_one("#refresh-seconds", Input)
-        editor.value = f"{self.session.interval:g}"
+        editor = self.query_one("#refresh-minutes", Input)
+        editor.value = str(self.session.interval / 60).removesuffix(".0")
         editor.focus()
 
-    @on(Input.Submitted, "#refresh-seconds")
+    @on(Input.Submitted, "#refresh-minutes")
     def save_interval(self, event: Input.Submitted):
         if not self._settings_open:
             return
         error = self.query_one("#settings-error", Static)
         try:
-            interval = validate_refresh_seconds(float(event.value))
+            minutes = float(event.value)
+            # Keep an unchanged legacy value exact despite float division/multiplication.
+            interval = validate_refresh_seconds(
+                self.session.interval if minutes == self.session.interval / 60 else minutes * 60)
         except ValueError:
-            error.update("Введите число от 5 до 86400 секунд.")
+            error.update("Введите число от 0.08333333333333333 до 1440 минут.")
             error.display = True
             return
         try:

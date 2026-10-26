@@ -73,7 +73,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.query_one("#themes").display)
             self.assertIs(app.focused, choices)
             self.assertEqual(len(choices.options), 1)
-            self.assertEqual(str(choices.options[0].prompt), "Интервал обновления: 3600 с")
+            self.assertEqual(str(choices.options[0].prompt), "Интервал обновления: 60 мин")
             self.assertFalse(app.query_one("#interval-editor").display)
             self.assertEqual(self.history(), before)
             self.assertEqual(self.server.requests, requests)
@@ -86,8 +86,9 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             table.focus()
             await pilot.press("s", "enter")
             self.assertIsInstance(app.focused, Input)
-            self.assertEqual(app.focused.value, "3600")
-            await pilot.press("ctrl+shift+a", "1", "2", "0", "enter")
+            self.assertEqual(app.focused.value, "60")
+            self.assertIn("минутах", str(app.query_one("#interval-label", Static).render()))
+            await pilot.press("ctrl+shift+a", "2", "enter")
             self.assertFalse(app.query_one("#settings").display)
             self.assertEqual(app.session.interval, 120)
             self.assertTrue(116 < self.seconds_until(app.session.view.next_refresh_at) <= 120)
@@ -100,7 +101,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
         async with self.running(interval=600) as (app, pilot):
             self.assertEqual(app.session.interval, 120)
             await pilot.press("s")
-            self.assertIn("120 с", str(app.query_one("#settings-list", OptionList).options[0].prompt))
+            self.assertIn("2 мин", str(app.query_one("#settings-list", OptionList).options[0].prompt))
 
     async def test_cancel_via_escape_repeat_s_and_close_discards_input_and_restores_focus(self):
         async with self.running() as (app, pilot):
@@ -110,7 +111,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             schedule = app.session.view.next_refresh_at
             for close in ("escape", "s", "button"):
                 with self.subTest(close=close):
-                    await pilot.press("s", "enter", "ctrl+shift+a", "6", "0")
+                    await pilot.press("s", "enter", "ctrl+shift+a", "3", "0")
                     if close == "button":
                         await pilot.click("#settings-close")
                     else:
@@ -127,34 +128,62 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
         async with self.running() as (app, pilot):
             schedule = app.session.view.next_refresh_at
             await pilot.press("s", "enter")
-            editor = app.query_one("#refresh-seconds", Input)
-            for value in ("", "4", "86401", "nan", "inf", "not-a-number"):
+            editor = app.query_one("#refresh-minutes", Input)
+            for value in ("", "0", "-1", "0.08", "1440.01", "nan", "inf", "1e309",
+                          "not-a-number"):
                 with self.subTest(value=value):
                     editor.value = value
                     await pilot.press("enter")
                     self.assertTrue(app.query_one("#settings").display)
                     self.assertTrue(app.query_one("#settings-error").display)
-                    self.assertIn("5 до 86400", str(app.query_one("#settings-error", Static).render()))
+                    self.assertIn("до 1440 минут", str(app.query_one("#settings-error", Static).render()))
                     self.assertEqual(app.session.interval, 3600)
                     self.assertEqual(app.session.view.next_refresh_at, schedule)
                     self.assertFalse(self.preference.exists())
-            editor.value = "5.5"
+            editor.value = "1.5"
             await pilot.press("enter")
-            self.assertEqual(app.session.interval, 5.5)
-            self.assertEqual(json.loads(self.preference.read_text())["refresh_seconds"], 5.5)
+            self.assertEqual(app.session.interval, 90)
+            self.assertEqual(json.loads(self.preference.read_text())["refresh_seconds"], 90)
+
+    async def test_minute_boundaries_are_saved_as_seconds(self):
+        for value, seconds in (("0.08333333333333333", 5), ("1440", 86400)):
+            with self.subTest(minutes=value):
+                async with self.running() as (app, pilot):
+                    await pilot.press("s", "enter")
+                    app.query_one("#refresh-minutes", Input).value = value
+                    await pilot.press("enter")
+                    self.assertFalse(app.query_one("#settings").display)
+                    self.assertEqual(app.session.interval, seconds)
+                    self.assertEqual(json.loads(self.preference.read_text())["refresh_seconds"],
+                                     seconds)
+
+    async def test_existing_fractional_seconds_round_trip_without_precision_loss(self):
+        for seconds in (5, 5.5, 1234.5678901234567, 421.0610084243126, 86400):
+            with self.subTest(seconds=seconds):
+                self.preference.write_text(json.dumps({"version": 1, "refresh_seconds": seconds}))
+                async with self.running(interval=600) as (app, pilot):
+                    self.assertEqual(app.session.interval, seconds)
+                    await pilot.press("s", "enter")
+                    editor = app.query_one("#refresh-minutes", Input)
+                    self.assertAlmostEqual(float(editor.value), seconds / 60)
+                    await pilot.press("enter")
+                    self.assertFalse(app.query_one("#settings").display)
+                    self.assertEqual(app.session.interval, seconds)
+                    self.assertEqual(json.loads(self.preference.read_text())["refresh_seconds"],
+                                     seconds)
 
     async def test_mouse_edit_refresh_and_moving_selection_do_not_open_jira(self):
         async with self.running() as (app, pilot):
             await pilot.press("s", "e")
             self.assertFalse(app.epic_mode)
             await pilot.click("#settings-list", offset=(3, 0))
-            editor = app.query_one("#refresh-seconds", Input)
+            editor = app.query_one("#refresh-minutes", Input)
             self.assertIs(app.focused, editor)
-            editor.value = "120"
+            editor.value = "2"
             self.server.issues[0]["fields"]["customfield_123"] = []
             await pilot.press("r")
             await self.settled(app, pilot)
-            self.assertEqual(editor.value, "120")
+            self.assertEqual(editor.value, "2")
             self.assertIs(app.focused, editor)
             await pilot.click("#other", offset=(4, 1))
             self.assertEqual(self.opened, [])
@@ -168,8 +197,8 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
     async def test_automatic_refresh_continues_and_save_does_not_cancel_inflight_load(self):
         async with self.running(interval=0.8) as (app, pilot):
             await pilot.press("s", "enter")
-            editor = app.query_one("#refresh-seconds", Input)
-            editor.value = "120"
+            editor = app.query_one("#refresh-minutes", Input)
+            editor.value = "2"
             self.server.request_gate = True
             try:
                 self.assertTrue(await asyncio.to_thread(self.server.request_started.wait, 3))
@@ -212,7 +241,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             before = self.preference.read_bytes()
             schedule = app.session.view.next_refresh_at
             await pilot.press("s", "enter")
-            app.query_one("#refresh-seconds", Input).value = "300"
+            app.query_one("#refresh-minutes", Input).value = "5"
             with patch("jira_overview.settings.os.replace", side_effect=PermissionError("private path")):
                 await pilot.press("enter")
             self.assertTrue(app.query_one("#settings").display)
@@ -252,7 +281,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
                     self.assertLessEqual(areas.region.right, panel.region.x)
                     self.assertEqual(panel.region.right, width)
                     self.assertLessEqual(panel.region.bottom, height - 1)
-                    self.assertLessEqual(app.query_one("#refresh-seconds").region.bottom, height - 1)
+                    self.assertLessEqual(app.query_one("#refresh-minutes").region.bottom, height - 1)
             await pilot.press("escape")
             await pilot.pause()
             self.assertEqual(app.query_one("#areas").size.width, 140)
