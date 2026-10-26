@@ -45,8 +45,9 @@ def _status_sort_key(status: str) -> tuple[int, str, str]:
     return rank, folded, status
 
 
-def _item_sort_key(item):
+def _item_sort_key(item, *, open_first=False):
     return (0 if item.new else 1 if item.unread_comments else 2,
+            0 if open_first and item.issue.status.casefold() == "open" else 1,
             _status_sort_key(item.issue.status), item.issue.key)
 
 
@@ -423,7 +424,7 @@ class Overview(App):
                 items = sorted((item for item in self.session.view.items
                                 if item.issue.tracked and not item.issue.is_epic
                                 and bool(item.issue.sprints) == (table.id == "sprint")),
-                               key=_item_sort_key)
+                               key=lambda item: _item_sort_key(item, open_first=table.id == "other"))
             issues = [item.issue for item in items]
             table.clear(columns=not self.epic_mode)
             if not self.epic_mode:

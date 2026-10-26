@@ -533,6 +533,68 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual([row[0] for row in self.rows(app, area)],
                                      [f"DEMO-{base + number}" for number in (1, 2, 3)])
 
+    async def test_open_sorts_first_only_outside_sprint_and_keeps_selection(self):
+        statuses = ["Review", "Open", "Backlog", "In Progress", "To Do",
+                    "open", "OPEN", "Open", "Opening"]
+        self.server.issues = [issue(999, epic=True)]
+        for base, sprints in ((0, [{"id": 1}]), (100, None)):
+            for number, status in enumerate(statuses, 1):
+                item = issue(base + number, sprints, epic_key="DEMO-999")
+                item["fields"]["status"]["name"] = status
+                self.server.issues.append(item)
+        async with self.running() as (app, pilot):
+            self.assertEqual([row[0] for row in self.rows(app, "sprint")],
+                             [f"DEMO-{i}" for i in (4, 5, 3, 7, 2, 8, 6, 9, 1)])
+            self.assertEqual([row[0] for row in self.rows(app, "other")],
+                             [f"DEMO-{i}" for i in (107, 102, 108, 106, 104, 105, 103, 109, 101)])
+            await pilot.press("e")
+            self.assertEqual([row[2] for row in self.rows(app, "epic")[1:]],
+                             ["In Progress"] * 2 + ["To Do"] * 2 + ["Backlog"] * 2 +
+                             ["OPEN"] * 2 + ["Open"] * 4 + ["open"] * 2 +
+                             ["Opening"] * 2 + ["Review"] * 2)
+            await pilot.press("e", "tab", "ctrl+home", "down")
+            table = app.query_one("#other", IssueTable)
+            self.assertEqual(table._key_at(table.cursor_row), "102")
+            selected = next(item for item in self.server.issues if item["id"] == "102")
+            selected["fields"]["status"]["name"] = "In Progress"
+            await self.refresh(app, pilot)
+            self.assertEqual(table._key_at(table.cursor_row), "102")
+            self.assertEqual(table.cursor_row, 3)
+            selected["fields"]["customfield_123"] = [{"id": 1}]
+            selected["fields"]["status"]["name"] = "Open"
+            await self.refresh(app, pilot)
+            sprint = app.query_one("#sprint", IssueTable)
+            self.assertIs(app.focused, sprint)
+            self.assertEqual(sprint._key_at(sprint.cursor_row), "102")
+            self.assertEqual(self.rows(app, "sprint")[0][2], "In Progress")
+            self.assertNotIn("DEMO-102", [row[0] for row in self.rows(app, "other")])
+
+    async def test_open_priority_preserves_local_marker_blocks_and_restart(self):
+        self.server.issues = [issue(i) for i in range(1, 5)]
+        for item in self.server.issues[::2]:
+            item["fields"]["status"]["name"] = "Open"
+        async with self.running() as (app, pilot):
+            for item in self.server.issues[:2]:
+                item["comments"].append(comment(999))
+            self.server.issues.extend((issue(5), issue(6)))
+            self.server.issues[-1]["fields"]["status"]["name"] = "Open"
+            await self.refresh(app, pilot)
+            self.server.issues[-1]["comments"].append(comment(1000))
+            await self.refresh(app, pilot)
+            expected = ["DEMO-6 NEW Comment +1", "DEMO-5 NEW", "DEMO-1 Comment +1",
+                        "DEMO-2 Comment +1", "DEMO-3", "DEMO-4"]
+            self.assertEqual([row[0] for row in self.rows(app, "other")], expected)
+            await pilot.press("tab", "ctrl+home", "enter")
+            await self.settled(app, pilot)
+            table = app.query_one("#other", IssueTable)
+            self.assertEqual(table._key_at(table.cursor_row), "6")
+            expected = ["DEMO-5 NEW", "DEMO-1 Comment +1", "DEMO-2 Comment +1",
+                        "DEMO-3", "DEMO-6", "DEMO-4"]
+            self.assertEqual([row[0] for row in self.rows(app, "other")], expected)
+            self.assertEqual(table.cursor_row, 4)
+        async with self.running() as (app, pilot):
+            self.assertEqual([row[0] for row in self.rows(app, "other")], expected)
+
     async def test_status_groups_are_exact_ordered_and_keep_issue_order_and_markers(self):
         self.server.issues = [
             issue(1, [{"id": 1}]), issue(2, [{"id": 1}]), issue(3), issue(4),
@@ -1022,7 +1084,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
         async with self.running() as (app, pilot):
             table = app.query_one("#other", IssueTable)
             await pilot.press("tab", "ctrl+home")
-            expected = [f"DEMO-{i}" for i in range(1, 8)]
+            expected = [f"DEMO-{i}" for i in (5, 1, 2, 3, 4, 6, 7)]
             self.assertEqual(table.row_count, len(expected))
             self.assertEqual([row[0] for row in self.rows(app, "other")], expected)
             for index, key in enumerate(expected):
@@ -1055,7 +1117,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.settled(app, pilot)
             self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-1")
             self.assertNotIn("Comment +1", self.visible(app))
-            self.assertEqual(table.cursor_row, 0)
+            self.assertEqual(table.cursor_row, 1)
 
     async def test_enter_and_real_mouse_click_acknowledge(self):
         async with self.running() as (app, pilot):
