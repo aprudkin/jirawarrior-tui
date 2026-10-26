@@ -44,6 +44,7 @@ class Server:
     def __init__(self):
         self.issues = [issue(1, [{"id": 1}]), issue(2)]
         self.context_issues = []
+        self.sprint_names = {}
         self.fields = [{"id": field, "schema": {"custom": "com.pyxis.greenhopper.jira:" + kind}}
                        for field, kind in (("customfield_123", "gh-sprint"),
                                            ("customfield_456", "gh-epic-label"),
@@ -99,7 +100,8 @@ class Server:
                     data = self.page(fixture.issues, "issues", params)
                 elif path.startswith("/rest/agile/1.0/sprint/"):
                     sid = int(path.rsplit("/", 1)[1])
-                    data = {"id": sid, "name": f"Sprint {sid}", "state": "closed" if sid == 3 else "active"}
+                    data = {"id": sid, "name": fixture.sprint_names.get(sid, f"Sprint {sid}"),
+                            "state": "closed" if sid == 3 else "active"}
                 elif path.startswith("/rest/api/2/issue/") and path.endswith("/comment"):
                     iid = path.split("/")[-2]
                     data = self.page(next(i for i in fixture.issues if i["id"] == iid)["comments"], "comments", params)
@@ -744,6 +746,44 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             for sensitive in (TOKEN, BODY, "Synthetic task", "Synthetic User", self.server.url):
                 self.assertNotIn(sensitive, saved)
 
+    async def test_weekly_sprint_heading_is_short_and_refreshes(self):
+        self.server.sprint_names = {1: "DEMO-2026-W43"}
+        async with self.running(size=(45, 16)) as (app, pilot):
+            heading = app.query_one("#sprint-heading", Static)
+            self.assertEqual(str(heading.render()), "Текущий спринт (1) — 43-я неделя")
+            self.assertEqual(app.snapshot.issues[0].sprints, ("DEMO-2026-W43 (#1)",))
+            await pilot.pause()
+            self.assertEqual(heading.size.height, 1)
+            self.server.sprint_names[1] = "DEMO-2026-W44"
+            await self.refresh(app, pilot)
+            self.assertEqual(str(heading.render()), "Текущий спринт (1) — 44-я неделя")
+            self.assertEqual(self.rows(app, "sprint"), [
+                ["DEMO-1", "Synthetic task 1", "In Progress"],
+            ])
+            self.assertEqual(app.focused._key_at(app.focused.cursor_row), "1")
+            self.assertEqual(self.opened, [])
+
+    async def test_multiple_weekly_sprints_and_custom_names(self):
+        self.server.sprint_names = {1: "DEMO-2026-W01", 2: "DEMO-2026-W53",
+                                    3: "DEMO-2026-W42", 4: "Release planning"}
+        self.server.issues[0]["fields"]["customfield_123"] = [
+            {"id": sid} for sid in (1, 2, 3, 4)]
+        async with self.running() as (app, pilot):
+            heading = str(app.query_one("#sprint-heading", Static).render())
+            self.assertEqual(heading, "Текущий спринт (1) — 1-я неделя; 53-я неделя; Release planning (#4)")
+            self.assertEqual(len(self.rows(app, "sprint")), 1)
+            self.assertEqual(len(self.rows(app, "other")), 1)
+
+    async def test_sprint_week_format_is_not_guessed(self):
+        async with self.running() as (app, pilot):
+            for name in ("DEMO-2026-W00", "DEMO-2026-W54", "DEMO-2026-W430",
+                         "DEMO-2026-W43 extra", "Release 43", "DEMO-W43"):
+                with self.subTest(name=name):
+                    self.server.sprint_names[1] = name
+                    await self.refresh(app, pilot)
+                    self.assertEqual(str(app.query_one("#sprint-heading", Static).render()),
+                                     f"Текущий спринт (1) — {name} (#1)")
+
     async def test_multiple_sprints_move_selection_and_no_duplicate(self):
         self.server.issues[0]["fields"]["customfield_123"] = [
             {"id": 1}, "com.atlassian.Sprint@a[id=2,state=ACTIVE,name=legacy]", {"id": 3}]
@@ -1145,6 +1185,18 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("/rest/api/2/issue/200/comment", paths)
             self.assertNotIn("/rest/api/2/issue/300/comment", paths)
             self.assertTrue(all(method == "GET" for method, *_ in self.server.requests))
+
+    async def test_epic_footer_label_is_short_in_both_modes(self):
+        self.epic_fixture()
+        async with self.running() as (app, pilot):
+            for key in (None, "e", "е"):
+                if key is not None:
+                    await pilot.press(key)
+                await pilot.pause()
+                screenshot = ElementTree.fromstring(app.export_screenshot())
+                visible_text = " ".join("".join(screenshot.itertext()).split())
+                self.assertIn("Эпики", visible_text)
+                self.assertNotIn("/ список", visible_text)
 
     async def test_epic_toggle_groups_across_sprints_preserves_selection_and_has_no_side_effects(self):
         self.epic_fixture()

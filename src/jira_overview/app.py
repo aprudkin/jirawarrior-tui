@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import re
 import sys
 from typing import Awaitable, Callable
 
@@ -24,6 +25,13 @@ _STATUS_PRIORITIES = (
     frozenset(("hold", "on hold")),
     frozenset(("backlog", "бэклог")),
 )
+
+
+def _sprint_label(name: str) -> str:
+    match = re.fullmatch(r".+-[0-9]{4}-W([0-9]{1,2}) \(#[0-9]+\)", name)
+    if match and 1 <= (week := int(match[1])) <= 53:
+        return f"{week}-я неделя"
+    return name
 
 
 def _status_sort_key(status: str) -> tuple[int, str, str]:
@@ -150,7 +158,7 @@ class Overview(App):
     Footer { height: 1; }
     """
     BINDINGS = [("q", "quit", "Выход"), ("r", "refresh", "Обновить"),
-                ("e", "toggle_epics", "Эпики / список"),
+                ("e", "toggle_epics", "Эпики"),
                 Binding("е", "toggle_epics", show=False),
                 ("tab", "focus_next", "Область"), ("enter", "noop", "Открыть")]
 
@@ -304,7 +312,7 @@ class Overview(App):
                 for label, width in zip(_COLUMN_LABELS, column_widths):
                     table.add_column(label, width=width)
             table.shown = {i.id: i for i in issues}
-            names = sorted({name for i in issues for name in i.sprints})
+            names = [_sprint_label(name) for name in sorted({name for i in issues for name in i.sprints})]
             if table.id == "epic":
                 heading = (f"Эпики ({len(epic_counts)}) — мои открытые тикеты ({sum(epic_counts.values())})" +
                            (" — нет эпиков" if not epic_counts else ""))
