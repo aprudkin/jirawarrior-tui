@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, replace
 from datetime import datetime
+import math
 from pathlib import Path
+import time
 from typing import Awaitable, Callable
 
 from .core import Issue, Jira, OverviewError, Snapshot, State
@@ -24,6 +26,7 @@ class ReviewView:
     display_name: str | None = None
     user_id: str | None = None
     updated_at: str | None = None
+    next_refresh_at: str | None = None
     refreshing: bool = False
     opening: bool = False
     refresh_error: str | None = None
@@ -51,6 +54,7 @@ class ReviewSession:
         self._refresh_busy = False
         self._open_busy = False
         self._jira_closed = False
+        self._next_tick: float | None = None
 
     @property
     def view(self) -> ReviewView:
@@ -62,7 +66,8 @@ class ReviewSession:
         if self._started:
             return
         self._started = True
-        self._replace_view(started=True)
+        self._next_tick = time.monotonic() + self._interval
+        self._replace_view(started=True, next_refresh_at=self._scheduled_refresh())
         self.refresh()
         self._timer_task = asyncio.create_task(self._timer())
 
@@ -82,11 +87,24 @@ class ReviewSession:
         self._replace_view(opening=True, open_notice=None)
         self._open_task = asyncio.create_task(self._open(shown))
 
+    def _scheduled_refresh(self) -> str | None:
+        if self._next_tick is None:
+            return None
+        deadline = self._next_tick
+        if self._jira.retry_at > deadline:
+            deadline += math.ceil((self._jira.retry_at - deadline) / self._interval) * self._interval
+        return datetime.fromtimestamp(time.time() + max(0, deadline - time.monotonic())).astimezone().strftime(
+            "%H:%M:%S %Z")
+
     async def _timer(self) -> None:
         try:
             while True:
-                await asyncio.sleep(self._interval)
-                self.refresh()
+                await asyncio.sleep(max(0, self._next_tick - time.monotonic()))
+                self._next_tick = time.monotonic() + self._interval
+                self._replace_view(next_refresh_at=self._scheduled_refresh())
+                # Keep the cadence, but don't animate a request that cannot run.
+                if time.monotonic() >= self._jira.retry_at:
+                    self.refresh()
         except asyncio.CancelledError:
             pass
 
@@ -115,7 +133,7 @@ class ReviewSession:
             self._refresh_task = None
             self._refresh_busy = False
             if not self._closing:
-                self._replace_view(refreshing=False)
+                self._replace_view(refreshing=False, next_refresh_at=self._scheduled_refresh())
 
     async def _open(self, shown: Issue) -> None:
         try:
@@ -181,4 +199,4 @@ class ReviewSession:
         if not self._jira_closed:
             self._jira_closed = True
             await self._jira.close()
-        self._view = replace(self._view, refreshing=False, opening=False, closed=True)
+        self._view = replace(self._view, refreshing=False, opening=False, next_refresh_at=None, closed=True)

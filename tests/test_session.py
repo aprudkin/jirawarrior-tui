@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from pathlib import Path
 import tempfile
 import unittest
@@ -30,6 +31,62 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
     def make_session(self, changed=None, interval=3600):
         return ReviewSession(Jira(self.server.url, TOKEN, allow_local_http=True),
                              Path(self.temp.name), interval, self.browser, changed)
+
+    def seconds_until(self, stamp):
+        parsed = datetime.strptime(stamp.rsplit(" ", 1)[0], "%H:%M:%S")
+        now = datetime.now().astimezone()
+        return ((parsed.hour - now.hour) * 3600 + (parsed.minute - now.minute) * 60 +
+                parsed.second - now.second - now.microsecond / 1_000_000) % 86400
+
+    async def test_next_refresh_is_timer_schedule_not_last_success_plus_interval(self):
+        session = self.make_session(interval=1.2)
+        self.addAsyncCleanup(session.aclose)
+        self.assertIsNone(session.view.next_refresh_at)
+        self.server.request_gate = True
+        await session.start()
+        self.assertTrue(await asyncio.to_thread(self.server.request_started.wait, 2))
+        first = session.view.next_refresh_at
+        self.assertIsNotNone(first)
+        self.assertTrue(session.view.refreshing)
+        # A tick skipped during the slow initial load still moves the schedule;
+        # it must not queue another refresh behind the current one.
+        await self.wait_until(lambda: session.view.next_refresh_at != first)
+        scheduled = session.view.next_refresh_at
+        self.assertEqual(sum(path.endswith("/myself") for _, path, *_ in self.server.requests), 1)
+        self.server.request_gate = False
+        self.server.request_release.set()
+        await self.wait_until(lambda: not session.view.refreshing)
+        self.assertIsNotNone(session.view.updated_at)
+        self.assertEqual(session.view.next_refresh_at, scheduled)
+        self.server.status = 503
+        session.refresh()
+        await self.wait_until(lambda: not session.view.refreshing)
+        self.assertEqual(session.view.next_refresh_at, scheduled)
+        self.assertIn("HTTP 503", session.view.refresh_error)
+        session.open(session.view.items[0].issue)
+        await self.wait_until(lambda: not session.view.opening)
+        self.assertEqual(session.view.next_refresh_at, scheduled)
+        await session.aclose()
+        self.assertIsNone(session.view.next_refresh_at)
+
+    async def test_next_refresh_respects_retry_after_without_resetting_timer(self):
+        session = self.make_session(interval=10)
+        self.addAsyncCleanup(session.aclose)
+        await session.start()
+        await self.wait_until(lambda: not session.view.refreshing)
+        self.assertTrue(8 < self.seconds_until(session.view.next_refresh_at) <= 10)
+        self.server.status = 429
+        self.server.retry_after = "31"
+        session.refresh()
+        await self.wait_until(lambda: not session.view.refreshing)
+        scheduled = session.view.next_refresh_at
+        # First eligible tick is ~40 seconds from start, not now + 10 or +31.
+        self.assertTrue(38 < self.seconds_until(scheduled) <= 40)
+        requests = len(self.server.requests)
+        session.refresh()
+        await self.wait_until(lambda: not session.view.refreshing)
+        self.assertEqual(session.view.next_refresh_at, scheduled)
+        self.assertEqual(len(self.server.requests), requests)
 
     async def test_failed_initial_load_is_not_an_empty_success_and_recovers(self):
         self.server.status = 500

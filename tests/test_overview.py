@@ -750,14 +750,16 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
     async def test_header_shows_jira_warrior_and_name_without_user_id(self):
         async with self.running() as (app, pilot):
             self.assertEqual(self.status(app),
-                             f"Jira Warrior: Synthetic User | Обновлено {app.session.view.updated_at}")
+                             f"Jira Warrior: Synthetic User | Обновлено {app.session.view.updated_at}"
+                             f" | Следующее обновление {app.session.view.next_refresh_at}")
             self.assertEqual(app.snapshot.user_id, "key:me")
             await pilot.press("e")
             self.assertTrue(self.status(app).startswith("Jira Warrior: Synthetic User | "))
             self.server.display_name = "[bold]Тестовый User[/bold]\x1b\u202e"
             await self.refresh(app, pilot)
             prefix = "Jira Warrior: [bold]Тестовый User[/bold]   | "
-            self.assertEqual(self.status(app), prefix + f"Обновлено {app.session.view.updated_at}")
+            self.assertEqual(self.status(app), prefix + f"Обновлено {app.session.view.updated_at}"
+                             f" | Следующее обновление {app.session.view.next_refresh_at}")
             self.assertNotIn("key:me", self.status(app))
             updated_at = app.session.view.updated_at
             self.server.status = 500
@@ -768,9 +770,81 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.server.status = 200
             await self.refresh(app, pilot)
             await pilot.press("e")
-            self.assertEqual(self.status(app), prefix + f"Обновлено {app.session.view.updated_at}")
+            self.assertEqual(self.status(app), prefix + f"Обновлено {app.session.view.updated_at}"
+                             f" | Следующее обновление {app.session.view.next_refresh_at}")
             self.assertEqual(app.snapshot.user_id, "key:me")
             self.assertEqual(self.opened, [])
+
+    async def test_header_animates_initial_and_manual_refresh_then_restores_schedule(self):
+        self.server.request_gate = True
+        app = self.make_app()
+        async with app.run_test(size=(160, 32)) as pilot:
+            self.assertTrue(await asyncio.to_thread(self.server.request_started.wait, 2))
+            frames = set()
+            for _ in range(5):
+                await pilot.pause(0.09)
+                status = self.status(app)
+                self.assertIn("Updating", status)
+                self.assertNotIn("Следующее обновление", status)
+                self.assertNotIn("Обновлено", status)
+                frames.add(status)
+            self.assertGreater(len(frames), 1)
+            self.server.request_gate = False
+            self.server.request_release.set()
+            await self.settled(app, pilot)
+            schedule = app.session.view.next_refresh_at
+            self.assertIn(f"Следующее обновление {schedule}", self.status(app))
+            self.assertNotIn("Updating", self.status(app))
+            updated = app.session.view.updated_at
+            table = app.query_one("#other", IssueTable)
+            table.focus()
+            selected = table._key_at(table.cursor_row)
+            self.server.status = 503
+            self.server.request_started.clear()
+            self.server.request_release.clear()
+            self.server.request_gate = True
+            await pilot.press("r")
+            self.assertTrue(await asyncio.to_thread(self.server.request_started.wait, 2))
+            self.assertIn(f"Обновлено {updated}", self.status(app))
+            self.assertIn("Updating", self.status(app))
+            await pilot.pause(0.2)
+            self.assertIs(app.focused, table)
+            self.assertEqual(table._key_at(table.cursor_row), selected)
+            self.server.request_gate = False
+            self.server.request_release.set()
+            await self.settled(app, pilot)
+            self.assertIn(f"УСТАРЕЛО: {updated}", self.status(app))
+            self.assertIn("HTTP 503", self.status(app))
+            self.assertIn(f"Следующее обновление {schedule}", self.status(app))
+            self.assertNotIn("Updating", self.status(app))
+            self.server.status = 200
+            await self.refresh(app, pilot)
+            self.assertNotIn("УСТАРЕЛО", self.status(app))
+            self.assertNotIn("Updating", self.status(app))
+            self.assertIn(f"Следующее обновление {schedule}", self.status(app))
+            self.assertEqual(self.opened, [])
+
+    async def test_header_shows_schedule_after_initial_failure_and_automatic_updating(self):
+        self.server.status = 500
+        async with self.running(size=(160, 32), interval=1.5) as (app, pilot):
+            self.assertIsNone(app.snapshot)
+            self.assertIn("НЕТ УСПЕШНОЙ ЗАГРУЗКИ", self.status(app))
+            self.assertIn(f"Следующее обновление {app.session.view.next_refresh_at}", self.status(app))
+            self.server.status = 200
+            self.server.request_gate = True
+            try:
+                self.assertTrue(await asyncio.to_thread(self.server.request_started.wait, 3))
+                await pilot.pause(0.1)
+                self.assertIn("Updating", self.status(app))
+                self.assertNotIn("Следующее обновление", self.status(app))
+            finally:
+                self.server.request_gate = False
+                self.server.request_release.set()
+            await self.settled(app, pilot)
+            self.assertIsNotNone(app.snapshot)
+            self.assertIn("Обновлено", self.status(app))
+            self.assertIn(f"Следующее обновление {app.session.view.next_refresh_at}", self.status(app))
+            self.assertNotIn("Updating", self.status(app))
 
     async def test_weekly_sprint_heading_is_short_and_refreshes(self):
         self.server.sprint_names = {1: "DEMO-2026-W43"}

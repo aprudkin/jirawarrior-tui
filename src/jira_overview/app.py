@@ -5,8 +5,10 @@ import asyncio
 from pathlib import Path
 import re
 import sys
+import time
 from typing import Awaitable, Callable
 
+from rich.spinner import Spinner
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
@@ -174,6 +176,7 @@ class Overview(App):
         super().__init__()
         self.session = ReviewSession(jira, state_dir, interval, browser, self.session_changed)
         self._painted_items = None
+        self._refresh_spinner = Spinner("dots", text="Updating", style="magenta")
         self.epic_mode = False
         self._theme_path = state_dir / "theme.json"
         self._theme_before_preview = None
@@ -205,6 +208,7 @@ class Overview(App):
         for table in self.query(IssueTable):
             table.add_columns(*_COLUMN_LABELS)
         self.query_one("#sprint", IssueTable).focus()
+        self.set_interval(0.08, self.animate_refresh)
         self.run_worker(self.session.start(), group="session", exit_on_error=False)
 
     @property
@@ -346,17 +350,34 @@ class Overview(App):
         if view.snapshot is not None and self._painted_items != view.items:
             self.paint_snapshot()
             self._painted_items = view.items
-        if view.display_name is not None:
-            freshness = (f"УСТАРЕЛО: {view.updated_at} | {view.refresh_error}"
-                         if view.refresh_error else f"Обновлено {view.updated_at}")
-            self.query_one("#connection", Static).update(
-                f"Jira Warrior: {view.display_name} | {freshness}")
-        elif view.refresh_error:
-            self.query_one("#connection", Static).update(f"НЕТ УСПЕШНОЙ ЗАГРУЗКИ | {view.refresh_error}")
+        self.paint_connection()
         notice = self.query_one("#notice", Static)
         notice.update(view.open_notice or "")
         notice.display = bool(view.open_notice)
         self.call_after_refresh(self.fit_sprint_area)
+
+    def animate_refresh(self):
+        if self.session.view.refreshing:
+            self.paint_connection()
+
+    def paint_connection(self):
+        view = self.session.view
+        if view.closed or not self.is_mounted:
+            return
+        if view.display_name is not None:
+            freshness = (f"УСТАРЕЛО: {view.updated_at} | {view.refresh_error}"
+                         if view.refresh_error else f"Обновлено {view.updated_at}")
+            status = Text(f"Jira Warrior: {view.display_name} | {freshness}")
+        elif view.refresh_error:
+            status = Text(f"НЕТ УСПЕШНОЙ ЗАГРУЗКИ | {view.refresh_error}")
+        else:
+            status = Text("Загрузка Jira…")
+        if view.refreshing:
+            status.append(" | ")
+            status.append_text(self._refresh_spinner.render(time.monotonic()))
+        elif view.next_refresh_at is not None:
+            status.append(f" | Следующее обновление {view.next_refresh_at}")
+        self.query_one("#connection", Static).update(status)
 
     def paint_snapshot(self, selected=None):
         if not self.session.view.snapshot:
