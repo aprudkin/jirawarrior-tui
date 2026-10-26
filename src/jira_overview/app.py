@@ -150,7 +150,7 @@ class Overview(App):
 
     def on_mount(self):
         for table in self.query(IssueTable):
-            table.add_columns("Тикет", "Название", "Статус", "Спринт")
+            table.add_columns("Тикет", "Название", "Статус")
         self.query_one("#sprint", IssueTable).focus()
         self.run_worker(self.session.start(), group="session", exit_on_error=False)
 
@@ -252,7 +252,7 @@ class Overview(App):
                 if item.unread_comments:
                     key.append(f" Comment +{item.unread_comments}", style="bold yellow")
                 table.add_row(key, Text(issue.summary, style=emphasis), Text(issue.status),
-                              Text("; ".join(issue.sprints)), key=issue.id)
+                              key=issue.id)
             row_by_key = {table._key_at(row): row for row in range(table.row_count)
                           if table._key_at(row) in table.shown}
             target = selected if selected in row_by_key else old_key

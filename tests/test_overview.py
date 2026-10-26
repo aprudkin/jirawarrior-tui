@@ -197,13 +197,12 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
     def assert_row_highlight(self, app, table_id, row_index, *, new=False, unread=0):
         table = app.query_one("#" + table_id, IssueTable)
         issue_indices = [index for index in range(table.row_count) if table.get_row_at(index)[2]]
-        key, summary, status, sprint = table.get_row_at(issue_indices[row_index])
+        key, summary, status = table.get_row_at(issue_indices[row_index])
         marker = (" NEW" if new else "") + (f" Comment +{unread}" if unread else "")
         self.assertEqual(key.plain, key.plain.split()[0] + marker)
         for text in (key, summary):
             self.assertEqual(bool(text.get_style_at_offset(app.console, 0).bold), bool(new or unread))
-        for text in (status, sprint):
-            self.assertFalse(text.get_style_at_offset(app.console, 0).bold)
+        self.assertFalse(status.get_style_at_offset(app.console, 0).bold)
         for label, color in (("NEW", "green"), (f"Comment +{unread}", "yellow")):
             if label in key.plain:
                 start = key.plain.index(label)
@@ -212,15 +211,20 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(style.bold)
                     self.assertEqual(style.color, Color.parse(color))
 
-    async def test_ticket_column_heading_in_both_areas(self):
-        async with self.running() as (app, _):
-            for table_id in ("sprint", "other"):
-                with self.subTest(table=table_id):
-                    table = app.query_one("#" + table_id, IssueTable)
-                    self.assertEqual(
-                        [column.label.plain for column in table.ordered_columns],
-                        ["Тикет", "Название", "Статус", "Спринт"],
-                    )
+    async def test_three_columns_without_sprint_in_both_areas(self):
+        async with self.running() as (app, pilot):
+            for _ in range(2):
+                for table_id, number in (("sprint", 1), ("other", 2)):
+                    with self.subTest(table=table_id):
+                        table = app.query_one("#" + table_id, IssueTable)
+                        self.assertEqual(
+                            [column.label.plain for column in table.ordered_columns],
+                            ["Тикет", "Название", "Статус"],
+                        )
+                        self.assertEqual(self.rows(app, table_id), [
+                            [f"DEMO-{number}", f"Synthetic task {number}", "In Progress"],
+                        ])
+                await self.refresh(app, pilot)
 
     async def test_highlight_combinations_refresh_open_and_restart(self):
         async with self.running() as (app, pilot):
@@ -574,6 +578,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sprint.scroll_y, 0)
 
     async def test_sprint_gap_survives_wrapped_heading_and_horizontal_scrollbar(self):
+        self.server.issues[0]["fields"]["summary"] = "Synthetic long task " * 8
         self.server.issues[0]["fields"]["customfield_123"] = [
             {"id": sid} for sid in (1, 2, 4, 5, 6, 7, 8)]
         async with self.running(size=(45, 16)) as (app, pilot):
@@ -651,13 +656,17 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             {"id": 1}, "com.atlassian.Sprint@a[id=2,state=ACTIVE,name=legacy]", {"id": 3}]
         async with self.running() as (app, pilot):
             heading = str(app.query_one("#sprint-heading", Static).render())
-            self.assertIn("Sprint 1", heading)
-            self.assertIn("Sprint 2", heading)
+            self.assertIn("Sprint 1 (#1)", heading)
+            self.assertIn("Sprint 2 (#2)", heading)
             self.assertNotIn("Sprint 3", heading)
+            self.assertEqual(self.rows(app, "sprint"), [
+                ["DEMO-1", "Synthetic task 1", "In Progress"],
+            ])
             self.server.issues[0]["fields"]["customfield_123"] = None
             await self.refresh(app, pilot)
             self.assertEqual(len(self.rows(app, "sprint")), 0)
             self.assertEqual(len(self.rows(app, "other")), 2)
+            self.assertTrue(all(len(row) == 3 for row in self.rows(app, "other")))
             self.assertNotIn("NEW", self.visible(app))
             self.assertEqual(app.focused.id, "other")
             await pilot.press("enter")
