@@ -4,7 +4,7 @@ No corporate fixtures. The only external action replaced is browser handoff.
 """
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -32,9 +32,11 @@ def comment(cid, author="other"):
     return {"id": str(cid), "author": {"key": author}, "created": "2026-01-01T12:00:00Z", "body": BODY}
 
 
-def issue(i, sprints=None, comments=None, summary=None, *, epic=False, epic_key=None, parent=None):
+def issue(i, sprints=None, comments=None, summary=None, *, epic=False, epic_key=None, parent=None,
+          updated=None):
     return {"id": str(i), "key": f"DEMO-{i}", "fields": {
         "summary": summary or f"Synthetic task {i}", "status": {"name": "In Progress"},
+        "updated": updated,
         "customfield_456": f"Большая работа {i}" if epic else None,
         "customfield_789": epic_key, "parent": {"key": parent} if parent else None,
         "customfield_123": sprints, "comment": {"comments": [], "total": 999}},
@@ -215,7 +217,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
     def assert_row_highlight(self, app, table_id, row_index, *, new=False, unread=0):
         table = app.query_one("#" + table_id, IssueTable)
         issue_indices = [index for index in range(table.row_count) if table.get_row_at(index)[2]]
-        key, summary, status = table.get_row_at(issue_indices[row_index])
+        key, summary, status, updated = table.get_row_at(issue_indices[row_index])
         marker = (" NEW" if new else "") + (f" Comment +{unread}" if unread else "")
         self.assertEqual(key.plain, key.plain.split()[0] + marker)
         for text in (key, summary):
@@ -277,7 +279,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.refresh(app, pilot)
             self.assert_status_columns_aligned(app)
             self.assertEqual([column.width for column in sprint.ordered_columns],
-                             [Text(label).cell_len for label in ("Тикет", "Название", "Статус")])
+                             [Text(label).cell_len for label in ("Тикет", "Название", "Статус", "Обновлено")])
 
     async def test_status_columns_stay_aligned_on_resize_scroll_and_return_from_epics(self):
         self.epic_fixture()
@@ -308,7 +310,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assert_status_columns_aligned(app)
             self.assertEqual(app.focused.id, "sprint")
 
-    async def test_three_columns_without_sprint_in_both_areas(self):
+    async def test_four_columns_without_sprint_in_both_areas(self):
         async with self.running() as (app, pilot):
             for _ in range(2):
                 for table_id, number in (("sprint", 1), ("other", 2)):
@@ -316,10 +318,10 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                         table = app.query_one("#" + table_id, IssueTable)
                         self.assertEqual(
                             [column.label.plain for column in table.ordered_columns],
-                            ["Тикет", "Название", "Статус"],
+                            ["Тикет", "Название", "Статус", "Обновлено"],
                         )
                         self.assertEqual(self.rows(app, table_id), [
-                            [f"DEMO-{number}", f"Synthetic task {number}", "In Progress"],
+                            [f"DEMO-{number}", f"Synthetic task {number}", "In Progress", "—"],
                         ])
                 await self.refresh(app, pilot)
 
@@ -414,6 +416,162 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.settled(app, pilot)
             self.assertEqual(self.opened, [self.server.url + "/browse/DEMO-3"])
             self.assert_row_highlight(app, "other", 0)
+
+    async def test_jira_updated_is_optional_timezone_aware_and_requested_on_every_page(self):
+        instant = datetime(2026, 1, 2, 9, 0, 0, 123000, tzinfo=timezone.utc)
+        cases = [
+            ("2026-01-02T12:00:00.123+0300", instant),
+            ("2026-01-02T04:00:00.123-05:00", instant),
+            ("2026-01-02T09:00:00.123Z", instant),
+            ("2026-01-02T09:00:00+00:00", instant.replace(microsecond=0)),
+            ("1960-01-02T09:00:00.123456Z",
+             datetime(1960, 1, 2, 9, 0, 0, 123456, tzinfo=timezone.utc)),
+            (None, None), ("", None), ("invalid", None), (123, None), (True, None),
+            ({"date": "2026-01-02"}, None), ([], None),
+            ("2026-01-02T09:00:00", None), ("2026-01-02", None),
+            ("2026-02-30T09:00:00Z", None),
+            ("0001-01-01T00:00:00+0100", None),
+        ]
+        self.server.issues = [issue(number, updated=value)
+                              for number, (value, _) in enumerate(cases, 1)]
+        self.server.issues.append(issue(99))
+        del self.server.issues[-1]["fields"]["updated"]
+        self.server.issues[0]["fields"]["customfield_789"] = "DEMO-1000"
+        self.server.context_issues = [issue(1000, epic=True, updated=cases[0][0])]
+        jira = Jira(self.server.url, TOKEN, allow_local_http=True)
+        try:
+            snapshot = await jira.snapshot()
+        finally:
+            await jira.close()
+        by_id = {item.id: item for item in snapshot.issues}
+        for number, (_, expected) in enumerate(cases, 1):
+            with self.subTest(number=number):
+                self.assertEqual(by_id[str(number)].updated, expected)
+                if expected is not None:
+                    self.assertIs(by_id[str(number)].updated.tzinfo, timezone.utc)
+        self.assertIsNone(by_id["99"].updated)
+        self.assertEqual(by_id["1000"].updated, instant)
+        related = [params for _, path, params, _ in self.server.requests
+                   if path == "/rest/api/2/issue/DEMO-1000"]
+        self.assertEqual(len(related), 1)
+        self.assertIn("updated", related[0]["fields"][0].split(","))
+        searches = [params for _, path, params, _ in self.server.requests
+                    if path == "/rest/api/2/search"]
+        self.assertEqual(len(searches), len(self.server.issues))
+        self.assertTrue(all("updated" in params["fields"][0].split(",") for params in searches))
+        self.assertTrue(all(method == "GET" for method, *_ in self.server.requests))
+
+    async def test_updated_sorts_inside_status_in_all_views_and_preserves_selection_on_refresh(self):
+        self.server.page_size = 100
+        self.server.issues = [issue(1000, epic=True), issue(2000, epic=True)]
+        dates = ["2026-01-01T09:00:00Z", "2026-01-02T12:00:00.500+0300",
+                 "2026-01-02T09:00:00.500Z", "2026-01-02T09:00:00.501+00:00",
+                 None, "invalid", "2026-01-05T09:00:00",
+                 "2027-01-01T09:00:00Z", "2000-01-01T09:00:00Z"]
+        for base, sprints in ((0, [{"id": 1}]), (100, None)):
+            for number, updated in enumerate(dates, 1):
+                item = issue(base + number, sprints, epic_key="DEMO-1000", updated=updated)
+                item["fields"]["status"]["name"] = (
+                    "Backlog" if number == 8 else "Open" if number == 9 else "In Progress")
+                self.server.issues.append(item)
+        async with self.running() as (app, pilot):
+            for area, numbers in (("sprint", (4, 2, 3, 1, 5, 6, 7, 8, 9)),
+                                  ("other", (109, 104, 102, 103, 101, 105, 106, 107, 108))):
+                self.assertEqual([row[0] for row in self.rows(app, area)],
+                                 [f"DEMO-{number}" for number in numbers])
+                by_key = {row[0]: row for row in self.rows(app, area)}
+                base = 0 if area == "sprint" else 100
+                for number in (5, 6, 7):
+                    self.assertEqual(by_key[f"DEMO-{base + number}"][3], "—")
+                self.assertEqual(by_key[f"DEMO-{base + 4}"][3],
+                                 datetime.fromisoformat(dates[3]).astimezone().strftime("%d.%m.%Y"))
+            await pilot.press("e")
+            self.assertEqual([row[0].strip() for row in self.rows(app, "epic")], [
+                "DEMO-1000", "DEMO-104", "DEMO-4", "DEMO-102", "DEMO-103", "DEMO-2", "DEMO-3",
+                "DEMO-1", "DEMO-101", "DEMO-105", "DEMO-106", "DEMO-107", "DEMO-5", "DEMO-6",
+                "DEMO-7", "DEMO-108", "DEMO-8", "DEMO-109", "DEMO-9", "DEMO-2000",
+            ])
+            await pilot.press("e")
+            table = app.query_one("#sprint", IssueTable)
+            table.focus()
+            table.move_cursor(row=3)
+            selected = next(item for item in self.server.issues if item["id"] == "1")
+            selected["fields"]["updated"] = "2026-01-03T09:00:00Z"
+            await self.refresh(app, pilot)
+            self.assertEqual(table._key_at(table.cursor_row), "1")
+            self.assertEqual(table.cursor_row, 0)
+            await pilot.press("e")
+            epic = app.query_one("#epic", IssueTable)
+            self.assertEqual(epic._key_at(epic.cursor_row), "1")
+            self.assertEqual(epic.cursor_row, 1)
+            selected["fields"]["updated"] = "2025-01-03T09:00:00Z"
+            await self.refresh(app, pilot)
+            self.assertEqual(epic._key_at(epic.cursor_row), "1")
+            self.assertEqual(epic.cursor_row, 8)
+            before = self.rows(app, "epic")
+            snapshot = app.snapshot
+            self.server.status = 500
+            selected["fields"]["updated"] = "2028-01-01T09:00:00Z"
+            await self.refresh(app, pilot)
+            self.assertIs(app.snapshot, snapshot)
+            self.assertEqual(self.rows(app, "epic"), before)
+            self.assertIn("УСТАРЕЛО", self.status(app))
+            self.server.status = 200
+            await self.refresh(app, pilot)
+            self.assertEqual(epic._key_at(epic.cursor_row), "1")
+            self.assertEqual(epic.cursor_row, 1)
+            await pilot.press("e")
+            self.assertEqual(table._key_at(table.cursor_row), "1")
+            self.assertEqual(table.cursor_row, 0)
+            self.assertFalse(self.opened)
+
+    async def test_updated_keeps_marker_priority_in_each_area_after_acknowledgment_and_restart(self):
+        self.server.page_size = 100
+        self.server.issues = []
+        for base, sprints in ((0, [{"id": 1}]), (100, None)):
+            self.server.issues.extend([
+                issue(base + 1, sprints, updated="2024-01-01T00:00:00Z"),
+                issue(base + 2, sprints, updated="2026-01-01T00:00:00Z"),
+                issue(base + 3, sprints, updated="2027-01-01T00:00:00Z"),
+            ])
+            self.server.issues[-1]["fields"]["status"]["name"] = "Backlog"
+        async with self.running() as (app, pilot):
+            for item in self.server.issues:
+                if int(item["id"]) % 100 in (1, 3):
+                    item["comments"].append(comment(10000 + int(item["id"])))
+            for base, sprints in ((0, [{"id": 1}]), (100, None)):
+                self.server.issues.extend([
+                    issue(base + 4, sprints),
+                    issue(base + 5, sprints, updated="1999-01-01T00:00:00Z"),
+                    issue(base + 6, sprints, updated="2000-01-01T00:00:00Z"),
+                ])
+            await self.refresh(app, pilot)
+            for item in self.server.issues:
+                if int(item["id"]) % 100 == 5:
+                    item["comments"].append(comment(20000 + int(item["id"])))
+            await self.refresh(app, pilot)
+            for area, base in (("sprint", 0), ("other", 100)):
+                self.assertEqual([row[0] for row in self.rows(app, area)], [
+                    f"DEMO-{base + 6} NEW", f"DEMO-{base + 5} NEW Comment +1", f"DEMO-{base + 4} NEW",
+                    f"DEMO-{base + 1} Comment +1", f"DEMO-{base + 3} Comment +1", f"DEMO-{base + 2}",
+                ])
+                table = app.query_one("#" + area, IssueTable)
+                table.focus()
+                await pilot.press("ctrl+home", "enter")
+                await self.settled(app, pilot)
+                self.assertEqual(table._key_at(table.cursor_row), str(base + 6))
+                self.assertEqual(table.cursor_row, 5)
+                self.assertEqual([row[0] for row in self.rows(app, area)], [
+                    f"DEMO-{base + 5} NEW Comment +1", f"DEMO-{base + 4} NEW",
+                    f"DEMO-{base + 1} Comment +1", f"DEMO-{base + 3} Comment +1",
+                    f"DEMO-{base + 2}", f"DEMO-{base + 6}",
+                ])
+            before = {area: self.rows(app, area) for area in ("sprint", "other")}
+            state = next(self.state_dir.glob("*.json")).read_text()
+            self.assertNotIn("updated", state)
+            self.assertNotIn("2026-", state)
+        async with self.running() as (app, pilot):
+            self.assertEqual({area: self.rows(app, area) for area in before}, before)
 
     async def test_local_markers_sort_before_status_in_each_area_and_survive_restart(self):
         self.server.page_size = 100
@@ -1013,7 +1171,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.refresh(app, pilot)
             self.assertEqual(str(heading.render()), "Текущий спринт (1) — 44-я неделя")
             self.assertEqual(self.rows(app, "sprint"), [
-                ["DEMO-1", "Synthetic task 1", "In Progress"],
+                ["DEMO-1", "Synthetic task 1", "In Progress", "—"],
             ])
             self.assertEqual(app.focused._key_at(app.focused.cursor_row), "1")
             self.assertEqual(self.opened, [])
@@ -1048,13 +1206,13 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Sprint 2 (#2)", heading)
             self.assertNotIn("Sprint 3", heading)
             self.assertEqual(self.rows(app, "sprint"), [
-                ["DEMO-1", "Synthetic task 1", "In Progress"],
+                ["DEMO-1", "Synthetic task 1", "In Progress", "—"],
             ])
             self.server.issues[0]["fields"]["customfield_123"] = None
             await self.refresh(app, pilot)
             self.assertEqual(len(self.rows(app, "sprint")), 0)
             self.assertEqual(len(self.rows(app, "other")), 2)
-            self.assertTrue(all(len(row) == 3 for row in self.rows(app, "other")))
+            self.assertTrue(all(len(row) == 4 for row in self.rows(app, "other")))
             self.assertNotIn("NEW", self.visible(app))
             self.assertEqual(app.focused.id, "other")
             await pilot.press("enter")

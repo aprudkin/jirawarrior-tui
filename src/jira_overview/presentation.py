@@ -1,6 +1,7 @@
 """Own the overview's tables, ordering, selection, and presentation geometry."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import re
 
 from rich.text import Text
@@ -15,7 +16,8 @@ from .core import Issue
 from .session import ReviewItem
 
 
-_COLUMN_LABELS = ("Тикет", "Название", "Статус")
+_COLUMN_LABELS = ("Тикет", "Название", "Статус", "Обновлено")
+_SORT_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _STATUS_PRIORITIES = (
     frozenset(("in progress", "в работе")),
     frozenset(("to do", "к выполнению")),
@@ -39,13 +41,15 @@ def _status_sort_key(status: str) -> tuple[int, str, str]:
 
 
 def _item_sort_key(item: ReviewItem, *, open_first=False):
+    updated = item.issue.updated
     return (0 if item.new else 1 if item.unread_comments else 2,
             0 if open_first and item.issue.status.casefold() == "open" else 1,
-            _status_sort_key(item.issue.status), item.issue.key)
+            _status_sort_key(item.issue.status), updated is None,
+            _SORT_EPOCH - updated if updated is not None else timedelta(), item.issue.key)
 
 
 def _issue_cells(item: ReviewItem, *, epic_count: int | None = None,
-                 indent: bool = False) -> tuple[Text, Text, Text]:
+                 indent: bool = False) -> tuple[Text, Text, Text, Text]:
     issue = item.issue
     emphasis = "bold" if issue.is_epic or item.new or item.unread_comments else ""
     key = Text(("  " if indent else "") + issue.key,
@@ -55,7 +59,8 @@ def _issue_cells(item: ReviewItem, *, epic_count: int | None = None,
     if item.unread_comments:
         key.append(f" Comment +{item.unread_comments}", style="bold yellow")
     summary = issue.summary + (f" ({epic_count})" if epic_count is not None else "")
-    return key, Text(summary, style=emphasis), Text(issue.status)
+    updated = issue.updated.astimezone().strftime("%d.%m.%Y") if issue.updated is not None else "—"
+    return key, Text(summary, style=emphasis), Text(issue.status), Text(updated)
 
 
 class IssueActivated(Message):
@@ -296,7 +301,7 @@ class OverviewPresentation(Vertical):
         if selected is None:
             selected = self._selected_key()
         tables = self._visible_tables()
-        ordinary_cells: dict[str, tuple[Text, Text, Text]] = {}
+        ordinary_cells: dict[str, tuple[Text, Text, Text, Text]] = {}
         column_widths = [Text(label).cell_len for label in _COLUMN_LABELS]
         if not self.epic_mode:
             ordinary_cells = {item.issue.id: _issue_cells(item) for item in self._items

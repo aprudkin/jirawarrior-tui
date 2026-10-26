@@ -1,6 +1,10 @@
 """Direct OverviewPresentation contract tests without Jira or ReviewSession."""
 import asyncio
+from datetime import datetime, timezone
+import os
+import time
 import unittest
+from unittest.mock import patch
 
 from textual.app import App, ComposeResult
 from textual.widgets import Static
@@ -11,12 +15,12 @@ from jira_overview.session import ReviewItem
 
 
 def review_item(number: int, *, status="In Progress", sprint=False, new=False,
-                comments=0, epic=False, epic_key=None, tracked=True, summary=None):
+                comments=0, epic=False, epic_key=None, tracked=True, summary=None, updated=None):
     issue = Issue(
         id=str(number), key=f"DEMO-{number}", summary=summary or f"Task {number}",
         status=status, sprints=("DEMO-2026-W43 (#1)",) if sprint else (),
         comments=frozenset(), foreign_comments=frozenset(), is_epic=epic,
-        epic_key=epic_key, tracked=tracked,
+        epic_key=epic_key, tracked=tracked, updated=updated,
     )
     return ReviewItem(issue, new, comments)
 
@@ -140,6 +144,35 @@ class PresentationTests(unittest.IsolatedAsyncioTestCase):
             app.query_one("#other", IssueTable).action_select_cursor()
             await pilot.pause()
             self.assertFalse(hasattr(app, "activated"))
+
+    async def test_updated_column_uses_local_date_in_all_views_and_keeps_epics_by_key(self):
+        try:
+            with patch.dict(os.environ, {"TZ": "Etc/GMT+5"}):
+                time.tzset()
+                async with PresentationHarness().run_test() as pilot:
+                    app = pilot.app
+                    presentation = app.query_one(OverviewPresentation)
+                    instant = datetime(2026, 1, 2, 2, 0, tzinfo=timezone.utc)
+                    presentation.present((
+                        review_item(20, epic=True, tracked=False, updated=instant),
+                        review_item(21, epic=True, tracked=False, updated=instant.replace(year=2027, day=3)),
+                        review_item(1, sprint=True, epic_key="DEMO-20", updated=instant),
+                        review_item(2, epic_key="DEMO-20"),
+                    ))
+                    for area, dates in (("sprint", ["01.01.2026"]), ("other", ["—"])):
+                        table = app.query_one("#" + area, IssueTable)
+                        self.assertEqual([column.label.plain for column in table.ordered_columns],
+                                         ["Тикет", "Название", "Статус", "Обновлено"])
+                        self.assertEqual([table.get_row_at(row)[3].plain for row in range(table.row_count)],
+                                         dates)
+                    presentation.toggle_epics()
+                    epic = app.query_one("#epic", IssueTable)
+                    self.assertEqual([epic._key_at(row) for row in range(epic.row_count)],
+                                     ["20", "1", "2", "21"])
+                    self.assertEqual([epic.get_row_at(row)[3].plain for row in range(epic.row_count)],
+                                     ["01.01.2026", "01.01.2026", "—", "02.01.2027"])
+        finally:
+            time.tzset()
 
     async def test_shared_widths_shrink_and_long_sprint_keeps_one_row_spacing(self):
         async with PresentationHarness().run_test(size=(110, 40)) as pilot:

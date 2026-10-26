@@ -14,6 +14,7 @@ import tempfile
 import time
 import unicodedata
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote, urlsplit
 
@@ -56,6 +57,19 @@ def required_text(obj: dict, key: str) -> str:
     return value
 
 
+def _updated_at(value: object) -> datetime | None:
+    """Optional Jira instant, normalized to UTC; never guess a missing timezone."""
+    if not isinstance(value, str):
+        return None
+    try:
+        updated = datetime.fromisoformat(value)
+        if updated.tzinfo is None:
+            return None
+        return updated.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        return None
+
+
 @dataclass(frozen=True)
 class Issue:
     id: str
@@ -70,6 +84,7 @@ class Issue:
     # Captured with the displayed issue: context must never acknowledge a later
     # observed version of the same issue after a concurrent refresh.
     tracked: bool = True
+    updated: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -180,7 +195,7 @@ class Jira:
                 raise OverviewError(f"Не удалось однозначно определить поле {label} по метаданным Jira.")
             detected.append(matches[0])
         sprint_field, epic_name_field, epic_link_field = detected
-        context_fields = "summary,status,parent," + epic_name_field + "," + epic_link_field
+        context_fields = "summary,status,parent,updated," + epic_name_field + "," + epic_link_field
         raw = await self.pages("/rest/api/2/search", "issues", {
             "jql": 'assignee = currentUser() AND resolution = Unresolved '
                    'AND status != "Verifying" ORDER BY key ASC',
@@ -299,14 +314,15 @@ class Jira:
             issues.append(Issue(issue_id, key, plain(required_text(data, "summary")),
                                 plain(required_text(data["status"], "name")),
                                 tuple(sorted(set(sprints))), frozenset(all_ids), frozenset(foreign_ids),
-                                is_epic(item), memberships[key]))
+                                is_epic(item), memberships[key], updated=_updated_at(data.get("updated"))))
         own_keys = {item["key"] for item in raw}
         for key in sorted(set(memberships.values()) - {None} - own_keys):
             item = by_key[key]
             data = item["fields"]
             issues.append(Issue(item["id"], key, plain(required_text(data, "summary")),
                                 plain(required_text(data["status"], "name")), (),
-                                frozenset(), frozenset(), is_epic=True, tracked=False))
+                                frozenset(), frozenset(), is_epic=True, tracked=False,
+                                updated=_updated_at(data.get("updated"))))
         return Snapshot(user_id, plain(required_text(me, "displayName")),
                         tuple(sorted(issues, key=lambda i: i.key)))
 
