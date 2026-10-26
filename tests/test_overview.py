@@ -1218,14 +1218,14 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
     async def test_delayed_row_event_opens_issue_captured_before_repaint(self):
         entered, release = asyncio.Event(), asyncio.Event()
         class DelayedOverview(Overview):
-            async def on_data_table_row_selected(inner, event):
+            async def on_issue_activated(inner, event):
                 if not hasattr(inner, "captured"):
                     inner.captured = event
                     entered.set()
                     asyncio.create_task(inner.open_captured(event))
             async def open_captured(inner, event):
                 await release.wait()
-                super(DelayedOverview, inner).on_data_table_row_selected(event)
+                super(DelayedOverview, inner).on_issue_activated(event)
         app = DelayedOverview(Jira(self.server.url, TOKEN, allow_local_http=True), self.state_dir,
                               interval=3600, browser=self.browser)
         async with app.run_test() as pilot:

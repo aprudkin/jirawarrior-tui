@@ -12,6 +12,7 @@ from xml.etree import ElementTree
 from textual.widgets import Input, OptionList, Static
 
 from jira_overview.app import IssueTable, Overview
+from jira_overview.presentation import OverviewPresentation
 from jira_overview.core import Jira
 from test_overview import Server, TOKEN
 
@@ -175,7 +176,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
     async def test_mouse_edit_refresh_and_moving_selection_do_not_open_jira(self):
         async with self.running() as (app, pilot):
             await pilot.press("s", "e")
-            self.assertFalse(app.epic_mode)
+            self.assertFalse(app.query_one("#presentation", OverviewPresentation).epic_mode)
             await pilot.click("#settings-list", offset=(3, 0))
             editor = app.query_one("#refresh-minutes", Input)
             self.assertIs(app.focused, editor)

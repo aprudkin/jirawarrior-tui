@@ -14,6 +14,7 @@ from textual.color import Color as UIColour
 from textual.widgets import OptionList
 
 from jira_overview.app import IssueTable, Overview
+from jira_overview.presentation import OverviewPresentation
 from jira_overview.core import Jira
 from test_overview import Server, TOKEN, comment, issue
 
@@ -283,7 +284,7 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
         async with self.running() as (app, pilot):
             sprint = app.query_one("#sprint", IssueTable)
             await pilot.press("t", "end", "e")
-            self.assertFalse(app.epic_mode)
+            self.assertFalse(app.query_one("#presentation", OverviewPresentation).epic_mode)
             # Moving the original task between areas must not steal panel focus.
             self.server.issues[0]["fields"]["customfield_123"] = []
             await pilot.press("r")
@@ -315,7 +316,7 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
             epic = app.query_one("#epic", IssueTable)
             selected = epic._key_at(epic.cursor_row)
             await pilot.press("t", "end", "escape")
-            self.assertTrue(app.epic_mode)
+            self.assertTrue(app.query_one("#presentation", OverviewPresentation).epic_mode)
             self.assertIs(app.focused, epic)
             self.assertEqual(epic._key_at(epic.cursor_row), selected)
 
