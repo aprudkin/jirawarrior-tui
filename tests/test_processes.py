@@ -23,8 +23,7 @@ async def locked_process(root, state_dir, instance="https://jira.example.invalid
 from pathlib import Path
 from jira_overview.core import State
 state = State(Path(sys.argv[1]), sys.argv[2], sys.argv[3])
-if sys.argv[4] == "ignore":
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
+signal.signal(signal.SIGINT, signal.SIG_IGN if sys.argv[4] == "ignore" else signal.default_int_handler)
 print("READY", flush=True)
 try:
     while True:
