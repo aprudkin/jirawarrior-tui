@@ -9,7 +9,8 @@ from pathlib import Path
 import time
 from typing import Awaitable, Callable
 
-from .core import Issue, Jira, OverviewError, Snapshot, State
+from .core import Issue, Jira, OverviewError, ProfileBusy, Snapshot, State
+from .processes import LockOwner, find_lock_owner, stop_lock_owner
 from .settings import validate_refresh_seconds
 
 
@@ -32,6 +33,10 @@ class ReviewView:
     opening: bool = False
     refresh_error: str | None = None
     open_notice: str | None = None
+    profile_busy: bool = False
+    lock_owner: LockOwner | None = None
+    recovery_busy: bool = False
+    recovery_notice: str | None = None
     started: bool = False
     closed: bool = False
 
@@ -50,6 +55,8 @@ class ReviewSession:
         self._open_task: asyncio.Task | None = None
         self._timer_task: asyncio.Task | None = None
         self._close_task: asyncio.Task | None = None
+        self._recovery_task: asyncio.Task | None = None
+        self._conflict_path: Path | None = None
         self._started = False
         self._closing = False
         self._refresh_busy = False
@@ -91,7 +98,8 @@ class ReviewSession:
 
     def refresh(self) -> None:
         self._require_started()
-        if self._closing or self._refresh_busy:
+        if (self._closing or self._refresh_busy or self._view.recovery_busy
+                or self._view.lock_owner is not None):
             return
         self._refresh_busy = True
         self._replace_view(refreshing=True)
@@ -104,6 +112,53 @@ class ReviewSession:
         self._open_busy = True
         self._replace_view(opening=True, open_notice=None)
         self._open_task = asyncio.create_task(self._open(shown))
+
+    def find_lock_owner(self) -> None:
+        self._require_started()
+        if (self._closing or self._refresh_busy or self._view.recovery_busy
+                or not self._view.profile_busy):
+            return
+        self._replace_view(recovery_busy=True, lock_owner=None, recovery_notice="Поиск другого экземпляра…")
+        self._recovery_task = asyncio.create_task(self._recover())
+
+    def cancel_lock_recovery(self) -> None:
+        if not self._closing:
+            self._replace_view(lock_owner=None, recovery_notice=None)
+
+    def stop_lock_owner(self, owner: LockOwner) -> None:
+        self._require_started()
+        if (self._closing or self._refresh_busy or self._view.recovery_busy or not self._view.profile_busy
+                or owner != self._view.lock_owner):
+            return
+        self._replace_view(recovery_busy=True, lock_owner=None,
+                           recovery_notice=f"Завершение экземпляра PID {owner.pid}…")
+        self._recovery_task = asyncio.create_task(self._recover(owner))
+
+    async def _recover(self, confirmed: LockOwner | None = None) -> None:
+        path = self._conflict_path
+        retry = False
+        try:
+            if path is None:
+                return
+            if confirmed is None:
+                owner = await find_lock_owner(path)
+                if not self._closing and path == self._conflict_path:
+                    self._replace_view(lock_owner=owner, recovery_notice=None)
+                    retry = owner is None
+            else:
+                await stop_lock_owner(path, confirmed)
+                if not self._closing:
+                    self._replace_view(recovery_notice=None)
+                    retry = True
+        except OverviewError as exc:
+            if not self._closing:
+                self._replace_view(lock_owner=None, recovery_notice=str(exc))
+        finally:
+            self._recovery_task = None
+            if not self._closing:
+                self._replace_view(recovery_busy=False)
+                if retry:
+                    self.refresh()
 
     def _scheduled_refresh(self) -> str | None:
         if self._next_tick is None:
@@ -148,12 +203,16 @@ class ReviewSession:
                 return
             self._snapshot = snapshot
             updated = datetime.now().astimezone().strftime("%H:%M:%S %Z")
+            self._conflict_path = None
             self._replace_view(snapshot=snapshot, items=self._items(), display_name=snapshot.display_name,
-                               user_id=snapshot.user_id, updated_at=updated, refresh_error=None)
+                               user_id=snapshot.user_id, updated_at=updated, refresh_error=None,
+                               profile_busy=False, lock_owner=None, recovery_notice=None)
         except OverviewError as exc:
             error = str(exc)
             if not self._closing:
-                self._replace_view(refresh_error=error)
+                self._conflict_path = exc.lock_path if isinstance(exc, ProfileBusy) else None
+                self._replace_view(refresh_error=error, profile_busy=isinstance(exc, ProfileBusy),
+                                   lock_owner=None)
         finally:
             self._refresh_task = None
             self._refresh_busy = False
@@ -211,10 +270,10 @@ class ReviewSession:
             raise asyncio.CancelledError
 
     async def _cleanup(self) -> None:
-        for task in (self._timer_task, self._refresh_task, self._open_task):
+        for task in (self._timer_task, self._refresh_task, self._open_task, self._recovery_task):
             if task is not None and task is not asyncio.current_task():
                 task.cancel()
-        tasks = [task for task in (self._timer_task, self._refresh_task, self._open_task)
+        tasks = [task for task in (self._timer_task, self._refresh_task, self._open_task, self._recovery_task)
                  if task is not None and task is not asyncio.current_task()]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -224,4 +283,5 @@ class ReviewSession:
         if not self._jira_closed:
             self._jira_closed = True
             await self._jira.close()
-        self._view = replace(self._view, refreshing=False, opening=False, next_refresh_at=None, closed=True)
+        self._view = replace(self._view, refreshing=False, opening=False, recovery_busy=False,
+                             lock_owner=None, next_refresh_at=None, closed=True)

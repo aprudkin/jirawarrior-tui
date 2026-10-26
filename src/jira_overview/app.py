@@ -15,10 +15,12 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
+from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from .core import Issue, Jira, OverviewError
+from .processes import LockOwner
 from .session import ReviewItem, ReviewSession
 from .settings import (DEFAULT_REFRESH_SECONDS, read_refresh_seconds,
                        validate_refresh_seconds, write_refresh_seconds)
@@ -195,6 +197,47 @@ class SettingsPanel(Vertical):
         yield Static("Enter изменить / сохранить\nEsc / s / × отменить", id="settings-hints")
 
 
+class OwnerConfirmation(ModalScreen[bool]):
+    """Finding a process is not consent to stop it; cancellation is the default."""
+    BINDINGS = [Binding("escape", "cancel", "Отмена", priority=True),
+                Binding("q", "app.quit", "Выход", priority=True),
+                Binding("ctrl+c", "app.quit", show=False, priority=True)]
+    DEFAULT_CSS = """
+    OwnerConfirmation { align: center middle; }
+    #owner-dialog {
+        width: 56; max-width: 95%; height: auto;
+        border: thick $primary; background: $surface; padding: 1 2;
+    }
+    #owner-question { height: auto; margin-bottom: 1; }
+    #owner-buttons { height: 3; }
+    #owner-buttons Button { width: 1fr; min-width: 8; }
+    """
+
+    def __init__(self, owner: LockOwner):
+        super().__init__()
+        self.owner = owner
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="owner-dialog"):
+            yield Static(f"Найден другой Jira Warrior: PID {self.owner.pid}.\n\n"
+                         "Завершить его и загрузить обзор здесь?\n"
+                         "Будет отправлен SIGINT. История и файлы не удаляются.",
+                         id="owner-question", markup=False)
+            with Horizontal(id="owner-buttons"):
+                yield Button("Завершить", id="stop-owner", variant="error")
+                yield Button("Отмена", id="cancel-owner")
+
+    def on_mount(self):
+        self.query_one("#cancel-owner", Button).focus()
+
+    def action_cancel(self):
+        self.dismiss(False)
+
+    @on(Button.Pressed)
+    def choose(self, event: Button.Pressed):
+        self.dismiss(event.button.id == "stop-owner")
+
+
 class Overview(App):
     TITLE = "Jira — мои задачи"
     ENABLE_COMMAND_PALETTE = False
@@ -223,6 +266,8 @@ class Overview(App):
                 Binding("T", "toggle_themes", show=False),
                 ("s", "toggle_settings", "Настройки"),
                 Binding("S", "toggle_settings", show=False),
+                ("p", "find_other_instance", "Найти экземпляр"),
+                Binding("P", "find_other_instance", show=False),
                 ("tab", "focus_next", "Область"), ("enter", "noop", "Открыть")]
 
     def __init__(self, jira: Jira, state_dir: Path, interval: float = DEFAULT_REFRESH_SECONDS,
@@ -238,6 +283,7 @@ class Overview(App):
         self._panel_selected = None
         self._settings_open = False
         self._settings_path = state_dir / "settings.json"
+        self._owner_dialog: OwnerConfirmation | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
@@ -287,14 +333,36 @@ class Overview(App):
         return self.session.view.snapshot
 
     def session_changed(self):
-        if self.is_mounted:
+        if self.is_mounted and self.is_running:
             self.paint_view()
+            self.refresh_bindings()
+            view = self.session.view
+            if (view.lock_owner is not None and not view.recovery_busy
+                    and self._owner_dialog is None):
+                owner = view.lock_owner
+                self._owner_dialog = OwnerConfirmation(owner)
+                self.push_screen(self._owner_dialog,
+                                 lambda confirmed: self._owner_decision(owner, confirmed))
+            elif (not view.profile_busy and self._owner_dialog is not None
+                  and self._owner_dialog.is_mounted):
+                self._owner_dialog.dismiss(False)
+
+    def _owner_decision(self, owner: LockOwner, confirmed: bool | None):
+        self._owner_dialog = None
+        if confirmed:
+            self.session.stop_lock_owner(owner)
+        else:
+            self.session.cancel_lock_recovery()
+
+    def action_find_other_instance(self):
+        if not self._panel_open and self._owner_dialog is None:
+            self.session.find_lock_owner()
 
     def on_resize(self):
         self.call_after_refresh(self.fit_sprint_area)
 
     def fit_sprint_area(self):
-        if self.epic_mode:
+        if not self.is_running or self.epic_mode:
             return
         table = self.query_one("#sprint", IssueTable)
         heading = self.query_one("#sprint-heading", Static)
@@ -319,6 +387,12 @@ class Overview(App):
         return self._theme_before_preview is not None or self._settings_open
 
     def check_action(self, action, parameters):
+        if self._owner_dialog is not None and action not in {"quit", "focus_next", "focus_previous"}:
+            return False
+        if action == "find_other_instance":
+            view = self.session.view
+            return (view.profile_busy and not view.refreshing and not view.recovery_busy
+                    and not self._panel_open)
         if action == "toggle_epics" and self._panel_open:
             return False
         return True
@@ -484,15 +558,17 @@ class Overview(App):
 
     def paint_view(self):
         view = self.session.view
-        if view.closed or not self.is_mounted:
+        if view.closed or not self.is_mounted or not self.is_running:
             return
         if view.snapshot is not None and self._painted_items != view.items:
             self.paint_snapshot()
             self._painted_items = view.items
         self.paint_connection()
         notice = self.query_one("#notice", Static)
-        notice.update(view.open_notice or "")
-        notice.display = bool(view.open_notice)
+        message = (view.recovery_notice or view.open_notice or
+                   ("P — найти другой экземпляр и предложить завершение" if view.profile_busy else ""))
+        notice.update(message)
+        notice.display = bool(message)
         self.call_after_refresh(self.fit_sprint_area)
 
     def animate_refresh(self):
@@ -501,7 +577,7 @@ class Overview(App):
 
     def paint_connection(self):
         view = self.session.view
-        if view.closed or not self.is_mounted:
+        if view.closed or not self.is_mounted or not self.is_running:
             return
         if view.display_name is not None:
             freshness = (f"УСТАРЕЛО: {view.updated_at} | {view.refresh_error}"

@@ -24,6 +24,12 @@ class OverviewError(Exception):
     """Safe to display: never contains an HTTP body, URL, token or raw exception."""
 
 
+class ProfileBusy(OverviewError):
+    def __init__(self, lock_path: Path):
+        self.lock_path = lock_path
+        super().__init__("Другой экземпляр уже использует этот профиль.")
+
+
 class RateLimited(OverviewError):
     def __init__(self, seconds: float):
         self.seconds = seconds
@@ -323,7 +329,7 @@ class State:
             try:
                 fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                raise OverviewError("Другой экземпляр уже использует этот профиль.") from None
+                raise ProfileBusy(directory / (profile + ".lock")) from None
             if self.path.exists():
                 data = json.loads(self.path.read_text())
                 self.validate(data)
