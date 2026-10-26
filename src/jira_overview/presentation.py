@@ -1,6 +1,7 @@
 """Own the overview's tables, ordering, selection, and presentation geometry."""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import re
 
@@ -49,11 +50,37 @@ def _item_sort_key(item: ReviewItem, *, open_first=False):
             _SORT_EPOCH - updated if updated is not None else timedelta(), item.issue.key)
 
 
+def _family_rows(items: list[ReviewItem], by_key: dict[str, ReviewItem], *,
+                 depth: int = 0, open_first: bool = False) -> list[tuple[ReviewItem, int]]:
+    """Order blocks by the parent, retaining only matching own children."""
+    selected = {item.issue.key: item for item in items}
+    roots: dict[str, ReviewItem] = {}
+    children: dict[str, list[ReviewItem]] = {}
+    for item in items:
+        parent = by_key.get(item.issue.parent_key) if item.issue.parent_key is not None else None
+        if parent is None or parent.issue.is_epic:
+            roots[item.issue.key] = item
+            continue
+        key = parent.issue.key
+        if key not in roots:
+            # A parent outside this area/filter is context, even if tracked in
+            # another area. Capture that fact in the activated immutable Issue.
+            roots[key] = selected.get(key) or ReviewItem(
+                replace(parent.issue, tracked=False), False, 0)
+        children.setdefault(key, []).append(item)
+    rows = []
+    for root in sorted(roots.values(), key=lambda item: _item_sort_key(item, open_first=open_first)):
+        rows.append((root, depth))
+        rows.extend((child, depth + 1) for child in sorted(
+            children.get(root.issue.key, ()), key=lambda item: _item_sort_key(item, open_first=open_first)))
+    return rows
+
+
 def _issue_cells(item: ReviewItem, *, epic_count: int | None = None,
-                 indent: bool = False) -> tuple[Text, Text, Text, Text]:
+                 indent: int = 0) -> tuple[Text, Text, Text, Text]:
     issue = item.issue
     emphasis = "bold" if issue.is_epic or item.new or item.unread_comments else ""
-    key = Text(("  " if indent else "") + issue.key,
+    key = Text("  " * indent + issue.key,
                style="bold cyan" if issue.is_epic else emphasis)
     if item.new:
         key.append(" NEW", style="bold green")
@@ -271,7 +298,10 @@ class OverviewPresentation(Vertical):
             self.query_one(f"#{area}-area").display = (area == "epic") == self.epic_mode
         self._paint(selected)
         tables = self._visible_tables()
-        target = next((table for table in tables if selected in table.shown), None)
+        target = next((table for table in tables
+                       if selected in table.shown and table.shown[selected].tracked), None)
+        if target is None:
+            target = next((table for table in tables if selected in table.shown), None)
         if target is None:
             target = next((table for table in tables if table.row_count), tables[0])
         target.focus()
@@ -296,8 +326,11 @@ class OverviewPresentation(Vertical):
             table.can_focus = True
         self.query_one("#summary-filter", Input).can_focus = True
         if selected is not None:
-            target_table = next((table for table in self._visible_tables()
-                                 if selected in table.shown), None)
+            tables = self._visible_tables()
+            target_table = target if (isinstance(target, IssueTable) and target in tables
+                                      and selected in target.shown) else next(
+                (table for table in tables if selected in table.shown and table.shown[selected].tracked),
+                next((table for table in tables if selected in table.shown), None))
             if target_table is not None:
                 self._move_to(target_table, selected)
                 target = target_table
@@ -366,21 +399,10 @@ class OverviewPresentation(Vertical):
         tables = self._visible_tables()
         matching_items = tuple(item for item in self._items
                                if self._filter_query in item.issue.summary.casefold())
-        ordinary_cells: dict[str, tuple[Text, Text, Text, Text]] = {}
-        column_widths = [Text(label).cell_len for label in _COLUMN_LABELS]
-        if not self.epic_mode:
-            ordinary_cells = {item.issue.id: _issue_cells(item) for item in matching_items
-                              if item.issue.tracked and not item.issue.is_epic}
-            # Both areas share one content grid, measured in terminal cells rather
-            # than code points. Explicit widths also shrink when long rows leave.
-            for cells in ordinary_cells.values():
-                column_widths = [max(width, cell.cell_len) for width, cell in zip(column_widths, cells)]
+        by_key = {item.issue.key: item for item in self._items}
+        plans: dict[IssueTable, list[tuple[ReviewItem, int]]] = {}
+        epic_counts: dict[str, int] = {}
         for table in tables:
-            old_row = table.cursor_row
-            old_cursor_key = table._key_at(old_row) if table.row_count else None
-            old_key_for_table = old_cursor_key if old_cursor_key in table.shown else None
-            old_issue_index = sum(table._key_at(row) in table.shown for row in range(old_row))
-            epic_counts: dict[str, int] = {}
             if table.id == "epic":
                 epics = sorted((item for item in self._items if item.issue.is_epic),
                                key=lambda item: item.issue.key)
@@ -388,41 +410,57 @@ class OverviewPresentation(Vertical):
                 for item in matching_items:
                     if item.issue.tracked and not item.issue.is_epic and item.issue.epic_key in children:
                         children[item.issue.epic_key].append(item)
-                items: list[ReviewItem] = []
+                rows: list[tuple[ReviewItem, int]] = []
                 for epic in epics:
-                    tickets = sorted(children[epic.issue.key], key=_item_sort_key)
+                    tickets = children[epic.issue.key]
                     if not tickets and self._filter_query not in epic.issue.summary.casefold():
                         continue
                     epic_counts[epic.issue.key] = len(tickets)
-                    items.extend((epic, *tickets))
+                    rows.append((epic, 0))
+                    rows.extend(_family_rows(tickets, by_key, depth=1))
             else:
-                items = sorted((item for item in matching_items
-                                if item.issue.tracked and not item.issue.is_epic
-                                and bool(item.issue.sprints) == (table.id == "sprint")),
-                               key=lambda item: _item_sort_key(item, open_first=table.id == "other"))
-            issues = [item.issue for item in items]
-            table.clear(columns=not self.epic_mode)
-            if not self.epic_mode:
-                for label, width in zip(_COLUMN_LABELS, column_widths):
-                    table.add_column(label, width=width)
+                tickets = [item for item in matching_items
+                           if item.issue.tracked and not item.issue.is_epic
+                           and bool(item.issue.sprints) == (table.id == "sprint")]
+                rows = _family_rows(tickets, by_key, open_first=table.id == "other")
+            plans[table] = rows
+        # Measure the final rows, including contextual copies and all indentation.
+        cells_by_table = {table: [_issue_cells(item, epic_count=epic_counts.get(item.issue.key), indent=depth)
+                                  for item, depth in rows] for table, rows in plans.items()}
+        column_widths = [Text(label).cell_len for label in _COLUMN_LABELS]
+        for cells in cells_by_table.values():
+            for row in cells:
+                column_widths = [max(width, cell.cell_len) for width, cell in zip(column_widths, row)]
+        selected_tables = [table for table in tables
+                           if any(item.issue.id == selected for item, _ in plans[table])]
+        focus_target = self.app.focused if self.app.focused in selected_tables else next(
+            (table for table in selected_tables if any(item.issue.id == selected and item.issue.tracked
+                                                     for item, _ in plans[table])),
+            next(iter(selected_tables), None))
+        for table in tables:
+            old_row = table.cursor_row
+            old_cursor_key = table._key_at(old_row) if table.row_count else None
+            old_key_for_table = old_cursor_key if old_cursor_key in table.shown else None
+            old_issue_index = sum(table._key_at(row) in table.shown for row in range(old_row))
+            issues = [item.issue for item, _ in plans[table]]
+            own_issues = [issue for issue in issues if issue.tracked and not issue.is_epic]
+            table.clear(columns=True)
+            for label, width in zip(_COLUMN_LABELS, column_widths):
+                table.add_column(label, width=width)
             table.shown = {issue.id: issue for issue in issues}
-            names = [_sprint_label(name) for name in sorted({name for i in issues for name in i.sprints})]
+            names = [_sprint_label(name) for name in sorted({name for i in own_issues for name in i.sprints})]
             if table.id == "epic":
                 heading = (f"Эпики ({len(epic_counts)}) — мои открытые тикеты ({sum(epic_counts.values())})" +
                            ((" — нет совпадений" if self._filter_query else " — нет эпиков")
                             if not epic_counts else ""))
             else:
                 title = "Текущий спринт" if table.id == "sprint" else "Остальные мои задачи"
-                heading = (f"{title} ({len(issues)})" +
+                heading = (f"{title} ({len(own_issues)})" +
                            (" — " + "; ".join(names) if names else "") +
                            ((" — нет совпадений" if self._filter_query else " — нет задач")
-                            if not issues else ""))
+                            if not own_issues else ""))
             self.query_one(f"#{table.id}-heading", Static).update(heading)
-            for item in items:
-                issue = item.issue
-                cells = (_issue_cells(item, epic_count=epic_counts.get(issue.key),
-                                      indent=not issue.is_epic) if self.epic_mode else
-                         ordinary_cells[issue.id])
+            for issue, cells in zip(issues, cells_by_table[table]):
                 table.add_row(*cells, key=issue.id)
             row_by_key = {table._key_at(row): row for row in range(table.row_count)
                           if table._key_at(row) in table.shown}
@@ -434,6 +472,6 @@ class OverviewPresentation(Vertical):
                 table.move_cursor(row=list(row_by_key.values())[nearest_index])
             else:
                 table.move_cursor(row=0)
-            if not self._suspended and selected in row_by_key:
+            if not self._suspended and table is focus_target:
                 table.focus()
         self.call_after_refresh(self.fit_sprint_area)

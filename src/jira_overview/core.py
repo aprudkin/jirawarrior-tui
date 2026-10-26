@@ -86,6 +86,7 @@ class Issue:
     tracked: bool = True
     updated: datetime | None = None
     is_subtask: bool = False
+    parent_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -280,8 +281,18 @@ class Jira:
                     return None
                 item = await related(required_text(parent, "key"))
 
-        memberships = {item["key"]: None if is_epic(item) else await parent_epic(item)
-                       for item in raw}
+        parents: dict[str, str] = {}
+        for item in raw:
+            parent = item["fields"].get("parent")
+            if parent is not None:
+                parent_item = await related(required_text(parent, "key"))
+                parents[item["key"]] = parent_item["key"]
+        memberships: dict[str, str | None] = {
+            item["key"]: None if is_epic(item) else await parent_epic(item) for item in raw}
+        # Retain intermediate parents as well as epics, using the same per-cycle
+        # cache. Context has no comments, sprint memberships or local observation.
+        for key in set(parents.values()) - memberships.keys():
+            memberships[key] = None if is_epic(by_key[key]) else await parent_epic(by_key[key])
         sprint_cache: dict[str, dict] = {}
         active_sprints: dict[str, Sprint] = {}
         issues = []
@@ -333,15 +344,18 @@ class Jira:
                                 plain(required_text(data["status"], "name")),
                                 tuple(sorted(set(sprints))), frozenset(all_ids), frozenset(foreign_ids),
                                 is_epic(item), memberships[key], updated=_updated_at(data.get("updated")),
-                                is_subtask=bool(data.get("parent"))))
+                                is_subtask=key in parents, parent_key=parents.get(key)))
         own_keys = {item["key"] for item in raw}
-        for key in sorted(set(memberships.values()) - {None} - own_keys):
+        context_keys = set(parents.values()) | {key for key in memberships.values() if key is not None}
+        for key in sorted(context_keys - own_keys):
             item = by_key[key]
             data = item["fields"]
             issues.append(Issue(item["id"], key, plain(required_text(data, "summary")),
                                 plain(required_text(data["status"], "name")), (),
-                                frozenset(), frozenset(), is_epic=True, tracked=False,
-                                updated=_updated_at(data.get("updated"))))
+                                frozenset(), frozenset(), is_epic=is_epic(item),
+                                epic_key=memberships.get(key), tracked=False,
+                                updated=_updated_at(data.get("updated")),
+                                is_subtask=bool(data.get("parent"))))
         return Snapshot(user_id, plain(required_text(me, "displayName")),
                         tuple(sorted(issues, key=lambda i: i.key)),
                         tuple(active_sprints[sid] for sid in sorted(active_sprints)))

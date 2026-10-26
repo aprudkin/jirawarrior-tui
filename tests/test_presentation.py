@@ -15,12 +15,14 @@ from jira_overview.session import ReviewItem
 
 
 def review_item(number: int, *, status="In Progress", sprint=False, new=False,
-                comments=0, epic=False, epic_key=None, tracked=True, summary=None, updated=None):
+                comments=0, epic=False, epic_key=None, tracked=True, summary=None, updated=None,
+                parent_key=None):
     issue = Issue(
         id=str(number), key=f"DEMO-{number}", summary=summary or f"Task {number}",
         status=status, sprints=("DEMO-2026-W43 (#1)",) if sprint else (),
         comments=frozenset(), foreign_comments=frozenset(), is_epic=epic,
         epic_key=epic_key, tracked=tracked, updated=updated,
+        parent_key=parent_key, is_subtask=parent_key is not None,
     )
     return ReviewItem(issue, new, comments)
 
@@ -173,6 +175,101 @@ class PresentationTests(unittest.IsolatedAsyncioTestCase):
                                      ["01.01.2026", "01.01.2026", "—", "02.01.2027"])
         finally:
             time.tzset()
+
+    async def test_families_stay_contiguous_and_sort_only_by_parent_in_all_views(self):
+        async with PresentationHarness().run_test() as pilot:
+            app = pilot.app
+            presentation = app.query_one(OverviewPresentation)
+            old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+            recent = datetime(2026, 1, 1, tzinfo=timezone.utc)
+            for sprint in (True, False):
+                presentation.present((
+                    review_item(100, epic=True, tracked=False),
+                    review_item(1, sprint=sprint, epic_key="DEMO-100", status="Backlog", new=True),
+                    review_item(2, sprint=sprint, epic_key="DEMO-100", status="Open", comments=1),
+                    review_item(3, sprint=sprint, epic_key="DEMO-100", updated=old),
+                    review_item(4, sprint=sprint, epic_key="DEMO-100", status="Open"),
+                    review_item(11, sprint=sprint, epic_key="DEMO-100", parent_key="DEMO-1",
+                                status="Backlog", new=True),
+                    review_item(14, sprint=sprint, epic_key="DEMO-100", parent_key="DEMO-1",
+                                status="Backlog", new=True, updated=old),
+                    review_item(12, sprint=sprint, epic_key="DEMO-100", parent_key="DEMO-1", comments=2),
+                    review_item(13, sprint=sprint, epic_key="DEMO-100", parent_key="DEMO-1",
+                                status="Open", updated=recent),
+                    review_item(31, sprint=sprint, epic_key="DEMO-100", parent_key="DEMO-3",
+                                new=True, updated=recent),
+                ))
+                table = app.query_one("#sprint" if sprint else "#other", IssueTable)
+                roots = ["DEMO-3", "  DEMO-31 NEW", "DEMO-4"] if sprint else [
+                    "DEMO-4", "DEMO-3", "  DEMO-31 NEW"]
+                self.assertEqual([table.get_row_at(row)[0].plain for row in range(table.row_count)], [
+                    "DEMO-1 NEW", "  DEMO-14 NEW", "  DEMO-11 NEW", "  DEMO-12 Comment +2",
+                    "  DEMO-13", "DEMO-2 Comment +1", *roots,
+                ])
+                presentation.toggle_epics()
+                epic = app.query_one("#epic", IssueTable)
+                self.assertEqual([epic.get_row_at(row)[0].plain for row in range(epic.row_count)], [
+                    "DEMO-100", "  DEMO-1 NEW", "    DEMO-14 NEW", "    DEMO-11 NEW",
+                    "    DEMO-12 Comment +2", "    DEMO-13", "  DEMO-2 Comment +1",
+                    "  DEMO-3", "    DEMO-31 NEW", "  DEMO-4",
+                ])
+                self.assertEqual(epic.get_row_at(0)[1].plain, "Task 100 (9)")
+                presentation.toggle_epics()
+
+    async def test_split_families_use_one_untracked_context_per_area_and_keep_real_counts(self):
+        async with PresentationHarness().run_test() as pilot:
+            app = pilot.app
+            presentation = app.query_one(OverviewPresentation)
+            items = (
+                review_item(100, epic=True, tracked=False),
+                review_item(10, epic_key="DEMO-100", new=True, comments=2),
+                review_item(1, sprint=True, parent_key="DEMO-10", epic_key="DEMO-100"),
+                review_item(2, sprint=True, parent_key="DEMO-10", epic_key="DEMO-100"),
+                review_item(20, tracked=False, epic_key="DEMO-100", status="Done"),
+                review_item(3, parent_key="DEMO-20", epic_key="DEMO-100"),
+            )
+            presentation.present(items)
+            sprint = app.query_one("#sprint", IssueTable)
+            other = app.query_one("#other", IssueTable)
+            self.assertEqual([sprint.get_row_at(r)[0].plain for r in range(sprint.row_count)],
+                             ["DEMO-10", "  DEMO-1", "  DEMO-2"])
+            self.assertFalse(sprint.shown["10"].tracked)
+            self.assertTrue(other.shown["10"].tracked)
+            self.assertEqual([other.get_row_at(r)[0].plain for r in range(other.row_count)],
+                             ["DEMO-10 NEW Comment +2", "DEMO-20", "  DEMO-3"])
+            for area in ("sprint", "other"):
+                self.assertIn("(2)", str(app.query_one(f"#{area}-heading", Static).render()))
+            other.focus()
+            other.move_cursor(row=0)
+            await pilot.pause()
+            presentation.present((*items, review_item(30)))
+            self.assertIs(app.focused, other)
+            self.assertTrue(presentation.selected_issue.tracked)
+            presentation.suspend_navigation()
+            app.query_one("#sidebar", Static).focus()
+            await pilot.pause()
+            presentation.resume_navigation()
+            await pilot.pause()
+            self.assertIs(app.focused, other)
+            self.assertTrue(presentation.selected_issue.tracked)
+            sprint.focus()
+            sprint.move_cursor(row=0)
+            await pilot.pause()
+            presentation.present(items)
+            self.assertIs(app.focused, sprint)
+            self.assertFalse(presentation.selected_issue.tracked)
+            presentation.toggle_epics()
+            epic = app.query_one("#epic", IssueTable)
+            self.assertEqual([epic.get_row_at(r)[0].plain for r in range(epic.row_count)], [
+                "DEMO-100", "  DEMO-10 NEW Comment +2", "    DEMO-1", "    DEMO-2",
+                "  DEMO-20", "    DEMO-3",
+            ])
+            self.assertEqual(epic.get_row_at(0)[1].plain, "Task 100 (4)")
+            await pilot.pause()
+            self.assertTrue(presentation.selected_issue.tracked)
+            presentation.toggle_epics()
+            await pilot.pause()
+            self.assertIs(app.focused, other)
 
     async def test_shared_widths_shrink_and_long_sprint_keeps_one_row_spacing(self):
         async with PresentationHarness().run_test(size=(110, 40)) as pilot:

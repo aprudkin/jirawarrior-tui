@@ -1057,7 +1057,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("e")
             await pilot.pause()
             self.assertEqual([r[0].strip() for r in self.rows(app, "epic")],
-                             ["DEMO-100", "DEMO-1", "DEMO-200", "DEMO-4"])
+                             ["DEMO-100", "DEMO-1", "DEMO-200", "DEMO-300", "DEMO-4"])
             self.assertIn("(1)", self.rows(app, "epic")[0][1])
             self.assertEqual(self.opened, [])
 
@@ -1633,6 +1633,152 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("НЕТ УСПЕШНОЙ", self.status(app))
             self.assertFalse(list(self.state_dir.glob("*.json")))
 
+    async def test_family_layout_widths_resize_and_selection_survive_area_moves_and_mode_changes(self):
+        self.server.issues = [issue(100, epic=True), issue(10, [{"id": 1}], epic_key="DEMO-100"),
+                              issue(123456, [{"id": 1}], parent="DEMO-10"),
+                              issue(2, parent="DEMO-10")]
+        async with self.running(size=(180, 40)) as (app, pilot):
+            sprint = app.query_one("#sprint", IssueTable)
+            other = app.query_one("#other", IssueTable)
+            self.assertEqual([row[0] for row in self.rows(app, "sprint")], ["DEMO-10", "  DEMO-123456"])
+            self.assertEqual([row[0] for row in self.rows(app, "other")], ["DEMO-10", "  DEMO-2"])
+            self.assertEqual(sprint.ordered_columns[0].width, Text("  DEMO-123456").cell_len)
+            self.assert_status_columns_aligned(app)
+            await pilot.press("down")
+            self.assertEqual(sprint._key_at(sprint.cursor_row), "123456")
+            before = next(self.state_dir.glob("*.json")).read_bytes()
+            requests = len(self.server.requests)
+            for width, height in ((45, 16), (180, 40)):
+                await pilot.resize_terminal(width, height)
+                await pilot.pause()
+                self.assert_status_columns_aligned(app, rendered=width == 180)
+                if width == 45:
+                    self.assertTrue(sprint.show_horizontal_scrollbar)
+                    await pilot.press("right", "end", "home")
+                else:
+                    last_row_y = sprint.region.y + sprint.header_height + sprint.row_count
+                    self.assertEqual(app.query_one("#other-heading", Static).region.y - last_row_y, 1)
+            await pilot.press("e")
+            epic = app.query_one("#epic", IssueTable)
+            self.assertEqual([row[0] for row in self.rows(app, "epic")],
+                             ["DEMO-100", "  DEMO-10", "    DEMO-123456", "    DEMO-2"])
+            self.assertEqual(epic._key_at(epic.cursor_row), "123456")
+            self.assertEqual(epic.ordered_columns[0].width, Text("    DEMO-123456").cell_len)
+            await pilot.press("up", "down", "ctrl+end", "ctrl+home", "down", "down", "e")
+            self.assertEqual(sprint._key_at(sprint.cursor_row), "123456")
+            self.assertEqual(next(self.state_dir.glob("*.json")).read_bytes(), before)
+            self.assertEqual(len(self.server.requests), requests)
+            self.server.issues[2]["fields"]["customfield_123"] = None
+            await self.refresh(app, pilot)
+            self.assertIs(app.focused, other)
+            self.assertEqual(other._key_at(other.cursor_row), "123456")
+            self.assertEqual([row[0] for row in self.rows(app, "other")],
+                             ["DEMO-10", "  DEMO-123456", "  DEMO-2"])
+            self.assertEqual(len({item.id for item in app.snapshot.issues if item.tracked}), 4)
+            self.assertIn("(2)", str(app.query_one("#other-heading", Static).render()))
+            self.assertFalse(self.opened)
+
+    async def test_context_parent_open_never_acknowledges_original_or_children_during_refresh(self):
+        self.server.issues = [issue(10), issue(1, [{"id": 1}], parent="DEMO-10"),
+                              issue(2, [{"id": 1}], parent="DEMO-10")]
+        async with self.running() as (app, pilot):
+            self.server.issues[0]["comments"].append(comment(109))
+            self.server.issues[1]["comments"].append(comment(19))
+            await self.refresh(app, pilot)
+            sprint = app.query_one("#sprint", IssueTable)
+            other = app.query_one("#other", IssueTable)
+            self.assertEqual([row[0] for row in self.rows(app, "sprint")],
+                             ["DEMO-10", "  DEMO-1 Comment +1", "  DEMO-2"])
+            self.assertEqual(other.get_row_at(0)[0].plain, "DEMO-10 Comment +1")
+            before = next(self.state_dir.glob("*.json")).read_bytes()
+            await pilot.click("#sprint", offset=(4, 1))
+            await self.settled(app, pilot)
+            self.assertFalse(self.opened)
+            self.browser_gate = asyncio.Event()
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertTrue(app.opening)
+            self.server.issues[0]["comments"].append(comment(110))
+            self.server.issues[2]["comments"].append(comment(29))
+            app.session.refresh()
+            for _ in range(300):
+                await pilot.pause(0.01)
+                if not app.refreshing:
+                    break
+            self.assertFalse(app.refreshing)
+            self.browser_gate.set()
+            await self.settled(app, pilot)
+            self.assertEqual(self.opened, [self.server.url + "/browse/DEMO-10"])
+            self.assertEqual(next(self.state_dir.glob("*.json")).read_bytes(), before)
+            self.assertEqual(other.get_row_at(0)[0].plain, "DEMO-10 Comment +2")
+            self.assertEqual(sprint.get_row_at(1)[0].plain, "  DEMO-1 Comment +1")
+            self.assertEqual(sprint.get_row_at(2)[0].plain, "  DEMO-2 Comment +1")
+            await pilot.click("#sprint", offset=(4, 1), control=True)
+            await self.settled(app, pilot)
+            self.assertEqual(len(self.opened), 2)
+            self.assertEqual(next(self.state_dir.glob("*.json")).read_bytes(), before)
+            # An actual child open confirms only that child, not the family.
+            await pilot.press("down", "enter")
+            await self.settled(app, pilot)
+            self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-1")
+            self.assertNotIn("Comment", sprint.get_row_at(sprint.cursor_row)[0].plain)
+            self.assertEqual(other.get_row_at(0)[0].plain, "DEMO-10 Comment +2")
+            self.assertIn("Comment +1", str(self.rows(app, "sprint")))
+
+    async def test_parent_context_failure_or_incomplete_data_preserves_snapshot_and_history(self):
+        self.server.issues = [issue(1, parent="DEMO-20"), issue(2, parent="DEMO-20")]
+        self.server.context_issues = [issue(20)]
+        async with self.running() as (app, pilot):
+            snapshot = app.snapshot
+            rows = self.rows(app, "other")
+            saved = next(self.state_dir.glob("*.json")).read_bytes()
+            self.assertEqual(set(json.loads(saved)["issues"]), {"1", "2"})
+            for broken in ("request", "summary", "status"):
+                if broken == "request":
+                    self.server.fail_path = "/rest/api/2/issue/DEMO-20"
+                else:
+                    del self.server.context_issues[0]["fields"][broken]
+                await self.refresh(app, pilot)
+                self.assertIs(app.snapshot, snapshot)
+                self.assertEqual(self.rows(app, "other"), rows)
+                self.assertEqual(next(self.state_dir.glob("*.json")).read_bytes(), saved)
+                self.assertIn("УСТАРЕЛО", self.status(app))
+                self.server.fail_path = None
+                self.server.context_issues = [issue(20)]
+            await self.refresh(app, pilot)
+            self.assertNotIn("УСТАРЕЛО", self.status(app))
+
+    async def test_snapshot_retains_immediate_parents_even_without_epics_and_caches_context(self):
+        self.server.issues = [issue(1, parent="DEMO-10"), issue(2, parent="DEMO-10"),
+                              issue(3, parent="DEMO-20"), issue(4, parent="DEMO-30"),
+                              issue(5, parent="DEMO-40"), issue(10), issue(30)]
+        self.server.issues[-1]["fields"]["status"]["name"] = "Verifying"
+        self.server.context_issues = [issue(20), issue(40)]
+        self.server.context_issues[-1]["fields"]["status"]["name"] = "Done"
+        jira = Jira(self.server.url, TOKEN, allow_local_http=True)
+        try:
+            snapshot = await jira.snapshot()
+        finally:
+            await jira.close()
+        by_key = {item.key: item for item in snapshot.issues}
+        self.assertEqual({key: by_key[key].parent_key for key in ("DEMO-1", "DEMO-3", "DEMO-4", "DEMO-5")},
+                         {"DEMO-1": "DEMO-10", "DEMO-3": "DEMO-20",
+                          "DEMO-4": "DEMO-30", "DEMO-5": "DEMO-40"})
+        self.assertTrue(by_key["DEMO-10"].tracked)
+        for key in ("DEMO-20", "DEMO-30", "DEMO-40"):
+            self.assertFalse(by_key[key].tracked)
+            self.assertFalse(by_key[key].is_epic)
+            self.assertFalse(by_key[key].comments)
+        self.assertEqual(by_key["DEMO-40"].status, "Done")
+        paths = [path for _, path, _, _ in self.server.requests]
+        self.assertNotIn("/rest/api/2/issue/DEMO-10", paths)
+        self.assertNotIn("/rest/api/2/issue/DEMO-30", paths)
+        for number in (20, 40):
+            self.assertEqual(paths.count(f"/rest/api/2/issue/DEMO-{number}"), 1)
+        for number in (20, 30, 40):
+            self.assertNotIn(f"/rest/api/2/issue/{number}/comment", paths)
+        self.assertTrue(all(method == "GET" for method, *_ in self.server.requests))
+
     def epic_fixture(self):
         self.server.issues = [issue(1, [{"id": 1}], epic_key="DEMO-100"),
                               issue(2, epic_key="DEMO-100"), issue(3),
@@ -1652,7 +1798,8 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(by_key["DEMO-4"].epic_key, "DEMO-200")
             self.assertEqual(by_key["DEMO-200"].status, "Done")
             self.assertFalse(by_key["DEMO-200"].tracked)
-            self.assertNotIn("DEMO-300", by_key)
+            self.assertFalse(by_key["DEMO-300"].tracked)
+            self.assertEqual(by_key["DEMO-4"].parent_key, "DEMO-300")
             self.assertNotIn("DEMO-999", by_key)
             saved = json.loads(next(self.state_dir.glob("*.json")).read_text())
             self.assertEqual(set(saved["issues"]), {"1", "2", "3", "4", "100", "101"})
@@ -1677,7 +1824,8 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
         self.epic_fixture()
         async with self.running(size=(45, 16)) as (app, pilot):
             self.assertEqual([r[0] for r in self.rows(app, "sprint")], ["DEMO-1"])
-            self.assertEqual([r[0] for r in self.rows(app, "other")], ["DEMO-2", "DEMO-3", "DEMO-4"])
+            self.assertEqual([r[0] for r in self.rows(app, "other")],
+                             ["DEMO-2", "DEMO-3", "DEMO-300", "  DEMO-4"])
             saved = next(self.state_dir.glob("*.json")).read_bytes()
             requests = len(self.server.requests)
             await pilot.press("e")
@@ -1687,7 +1835,8 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.query_one("#other-area").display)
             table = app.query_one("#epic", IssueTable)
             keys = [r[0].strip().split()[0] for r in self.rows(app, "epic")]
-            self.assertEqual(keys, ["DEMO-100", "DEMO-1", "DEMO-2", "DEMO-101", "DEMO-200", "DEMO-4"])
+            self.assertEqual(keys, ["DEMO-100", "DEMO-1", "DEMO-2", "DEMO-101", "DEMO-200",
+                                    "DEMO-300", "DEMO-4"])
             self.assertEqual(table._key_at(table.cursor_row), "1")
             self.assertIn("(0)", self.rows(app, "epic")[3][1])
             self.assertIn("[bold]Контекстный эпик[/bold]", str(self.rows(app, "epic")))
@@ -1823,7 +1972,9 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("ctrl+home")
             self.assertEqual(table._key_at(table.cursor_row), "100")
             await pilot.press("ctrl+end")
-            self.assertEqual(table._key_at(table.cursor_row), "2")
+            # The last visible family is parent 300 followed by its child 4.
+            self.assertEqual(table._key_at(table.cursor_row), "4")
+            self.assertEqual(table._key_at(table.cursor_row - 1), "300")
             await pilot.press("pageup", "pagedown", "e", "tab")
             await pilot.pause()
             self.assertIn(app.focused.id, ("sprint", "other"))

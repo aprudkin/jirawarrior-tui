@@ -121,6 +121,31 @@ class FilterTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.keys(app, "epic"),
                              ["DEMO-20", "DEMO-1", "DEMO-2", "DEMO-21", "DEMO-4", "DEMO-22"])
 
+    async def test_subtask_filter_retains_only_parent_context_not_unmatched_siblings(self):
+        self.server.issues = [issue(100, epic=True), issue(10, epic_key="DEMO-100", summary="Parent"),
+                              issue(1, [{"id": 1}], parent="DEMO-10", summary="API fix"),
+                              issue(2, [{"id": 1}], parent="DEMO-10", summary="Other child")]
+        async with self.running() as (app, pilot):
+            before = self.history()
+            requests = len(self.server.requests)
+            await pilot.press("/", *"api")
+            self.assertEqual(self.keys(app, "sprint"), ["DEMO-10", "DEMO-1"])
+            self.assertEqual(self.keys(app, "other"), [])
+            sprint = app.query_one("#sprint", IssueTable)
+            self.assertFalse(sprint.shown["10"].tracked)
+            self.assertIn("(1)", str(app.query_one("#sprint-heading", Static).render()))
+            await pilot.press("enter", "e")
+            self.assertEqual(self.keys(app, "epic"), ["DEMO-100", "DEMO-10", "DEMO-1"])
+            epic = app.query_one("#epic", IssueTable)
+            self.assertEqual(epic.get_row_at(0)[1].plain, "Synthetic task 100 (1)")
+            self.assertFalse(epic.shown["10"].tracked)
+            await pilot.press("/", "ctrl+u", *"parent", "enter")
+            self.assertEqual(self.keys(app, "epic"), ["DEMO-100", "DEMO-10"])
+            self.assertTrue(epic.shown["10"].tracked)
+            self.assertEqual(self.history(), before)
+            self.assertEqual(len(self.server.requests), requests)
+            self.assertFalse(self.opened)
+
     async def test_shortcut_letters_are_text_without_http_browser_or_history_changes(self):
         text = "qretspQRETSPе/"
         async with self.running() as (app, pilot):
