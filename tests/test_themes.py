@@ -27,6 +27,16 @@ EXTRA_THEMES = {
     "everforest-light": (False, "#fdf6e3", "#5c6a72"),
     "kanagawa-wave": (True, "#1f1f28", "#dcd7ba"),
     "gruvbox-light": (False, "#fbf1c7", "#3c3836"),
+    "one-dark": (True, "#282c34", "#abb2bf"),
+    "solarized-dark": (True, "#002b36", "#93a1a1"),
+    "ayu-dark": (True, "#0d1017", "#bfbdb6"),
+    "ayu-mirage": (True, "#1f2430", "#cccac2"),
+    "night-owl": (True, "#011627", "#d6deeb"),
+    "github-dark": (True, "#24292e", "#e1e4e8"),
+    "catppuccin-frappe": (True, "#303446", "#c6d0f5"),
+    "catppuccin-macchiato": (True, "#24273a", "#cad3f5"),
+    "rose-pine-moon": (True, "#232136", "#e0def4"),
+    "kanagawa-dragon": (True, "#181616", "#c5c9c5"),
 }
 
 
@@ -89,8 +99,8 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
         async with self.running() as (app, pilot):
             self.assertEqual(app.theme, "textual-dark")
             themes = {name: theme for name, theme in app.available_themes.items() if name != "textual-ansi"}
-            self.assertEqual(len(themes), 17)
-            self.assertEqual(sum(theme.dark for theme in themes.values()), 11)
+            self.assertEqual(len(themes), 27)
+            self.assertEqual(sum(theme.dark for theme in themes.values()), 21)
             for name, (dark, background, foreground) in EXTRA_THEMES.items():
                 with self.subTest(theme=name):
                     theme = themes[name]
@@ -225,7 +235,7 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.theme, "textual-light")
             self.assertNotEqual(app.screen.styles.background, original_background)
             await pilot.press("home")
-            self.assertEqual(self.highlighted(app), "catppuccin-mocha")
+            self.assertEqual(self.highlighted(app), "ayu-dark")
             await pilot.press("pagedown", "pageup", "down", "up")
             self.assertEqual(app.theme, self.highlighted(app))
             self.assertFalse(app.query_one("#theme-list", OptionList).highlighted_option.disabled)
@@ -262,23 +272,25 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
         async with self.running() as (app, pilot):
             before = self.history()
             await pilot.press("t", "home")
+            self.assertEqual(app.theme, "ayu-dark")
+            # Click a different visible theme, not the already-highlighted row.
             await pilot.click("#theme-list", offset=(3, 2))
-            self.assertEqual(app.theme, "dracula")
+            self.assertEqual(app.theme, "ayu-mirage")
             self.assertTrue(app.query_one("#themes").display)
             self.assertFalse(self.preference.exists())
             await pilot.press("enter")
             self.assertFalse(app.query_one("#themes").display)
-            self.assertEqual(json.loads(self.preference.read_text()), {"version": 1, "theme": "dracula"})
+            self.assertEqual(json.loads(self.preference.read_text()), {"version": 1, "theme": "ayu-mirage"})
             self.assertEqual(self.preference.stat().st_mode & 0o777, 0o600)
             self.assertEqual(self.history(), before)
             self.assertEqual(self.opened, [])
         async with self.running() as (app, pilot):
-            self.assertEqual(app.theme, "dracula")
+            self.assertEqual(app.theme, "ayu-mirage")
             await pilot.press("t")
-            self.assertEqual(self.highlighted(app), "dracula")
+            self.assertEqual(self.highlighted(app), "ayu-mirage")
             await pilot.press("end", "escape")
-            self.assertEqual(app.theme, "dracula")
-            self.assertEqual(json.loads(self.preference.read_text())["theme"], "dracula")
+            self.assertEqual(app.theme, "ayu-mirage")
+            self.assertEqual(json.loads(self.preference.read_text())["theme"], "ayu-mirage")
 
     async def test_background_refresh_preserves_preview_and_selected_issue(self):
         async with self.running() as (app, pilot):

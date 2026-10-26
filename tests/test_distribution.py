@@ -30,7 +30,10 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(len(notices), 1)
         content = distribution.locate_file(notices[0]).read_text()
         for attribution in ("Copyright (c) mvllow", "Copyright (c) 2019 sainnhe",
-                            "Copyright (c) 2021 Tommaso Laurenzi", "Author: morhetz"):
+                            "Copyright (c) 2021 Tommaso Laurenzi", "Author: morhetz",
+                            "Copyright (c) 2016 GitHub Inc.", "Copyright (c) 2011 Ethan Schoonover",
+                            "Copyright (c) Konstantin Pschera", "Copyright (c) 2018 Sarah Drasner",
+                            "Copyright (c) 2020 Primer", "Copyright (c) 2021 Catppuccin"):
             self.assertIn(attribution, content)
         self.assertIn("Permission is hereby granted", content)
 

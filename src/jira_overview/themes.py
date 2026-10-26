@@ -86,6 +86,116 @@ ADDITIONAL_THEMES = (
             "block-cursor-blurred-background": "#d5c4a1",
         },
     ),
+    Theme(
+        name="one-dark", primary="#61afef", secondary="#c678dd", accent="#56b6c2",
+        foreground="#abb2bf", background="#282c34", surface="#21252b", panel="#282c34",
+        success="#98c379", warning="#e5c07b", error="#e06c75",
+        variables={
+            "block-cursor-background": "#21252b",
+            "block-cursor-foreground": "#abb2bf",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#21252b",
+        },
+    ),
+    Theme(
+        name="solarized-dark", primary="#268bd2", secondary="#2aa198", accent="#6c71c4",
+        foreground="#93a1a1", background="#002b36", surface="#073642", panel="#073642",
+        success="#859900", warning="#b58900", error="#dc322f",
+        variables={
+            "block-cursor-background": "#002b36",
+            "block-cursor-foreground": "#93a1a1",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#002b36",
+        },
+    ),
+    Theme(
+        name="ayu-dark", primary="#e6b450", secondary="#59c2ff", accent="#d2a6ff",
+        foreground="#bfbdb6", background="#0d1017", surface="#10141c", panel="#141821",
+        success="#aad94c", warning="#ffb454", error="#d95757",
+        variables={
+            "block-cursor-background": "#141821",
+            "block-cursor-foreground": "#bfbdb6",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#141821",
+        },
+    ),
+    Theme(
+        name="ayu-mirage", primary="#ffcc66", secondary="#73d0ff", accent="#dfbfff",
+        foreground="#cccac2", background="#1f2430", surface="#242936", panel="#282e3b",
+        success="#d5ff80", warning="#ffcd66", error="#ff6666",
+        variables={
+            "block-cursor-background": "#282e3b",
+            "block-cursor-foreground": "#cccac2",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#282e3b",
+        },
+    ),
+    Theme(
+        name="night-owl", primary="#82aaff", secondary="#c792ea", accent="#7fdbca",
+        foreground="#d6deeb", background="#011627", surface="#0b253a", panel="#1d3b53",
+        success="#9ccc65", warning="#ffca28", error="#ef5350",
+        variables={
+            "block-cursor-background": "#1d3b53",
+            "block-cursor-foreground": "#d6deeb",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#1d3b53",
+        },
+    ),
+    Theme(
+        name="github-dark", primary="#79b8ff", secondary="#b392f0", accent="#ffab70",
+        foreground="#e1e4e8", background="#24292e", surface="#1b1f23", panel="#2f363d",
+        success="#85e89d", warning="#ffdf5d", error="#f97583",
+        variables={
+            "block-cursor-background": "#2f363d",
+            "block-cursor-foreground": "#e1e4e8",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#2f363d",
+        },
+    ),
+    Theme(
+        name="catppuccin-frappe", primary="#8caaee", secondary="#ca9ee6", accent="#f4b8e4",
+        foreground="#c6d0f5", background="#303446", surface="#292c3c", panel="#414559",
+        success="#a6d189", warning="#e5c890", error="#e78284",
+        variables={
+            "block-cursor-background": "#414559",
+            "block-cursor-foreground": "#c6d0f5",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#414559",
+        },
+    ),
+    Theme(
+        name="catppuccin-macchiato", primary="#8aadf4", secondary="#c6a0f6", accent="#f5bde6",
+        foreground="#cad3f5", background="#24273a", surface="#1e2030", panel="#363a4f",
+        success="#a6da95", warning="#eed49f", error="#ed8796",
+        variables={
+            "block-cursor-background": "#363a4f",
+            "block-cursor-foreground": "#cad3f5",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#363a4f",
+        },
+    ),
+    Theme(
+        name="rose-pine-moon", primary="#9ccfd8", secondary="#c4a7e7", accent="#ea9a97",
+        foreground="#e0def4", background="#232136", surface="#2a273f", panel="#393552",
+        success="#9ccfd8", warning="#f6c177", error="#eb6f92",
+        variables={
+            "block-cursor-background": "#393552",
+            "block-cursor-foreground": "#e0def4",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#393552",
+        },
+    ),
+    Theme(
+        name="kanagawa-dragon", primary="#8ba4b0", secondary="#8992a7", accent="#c4b28a",
+        foreground="#c5c9c5", background="#181616", surface="#12120f", panel="#282727",
+        success="#87a987", warning="#c4b28a", error="#c4746e",
+        variables={
+            "block-cursor-background": "#282727",
+            "block-cursor-foreground": "#c5c9c5",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#282727",
+        },
+    ),
 )
 
 
