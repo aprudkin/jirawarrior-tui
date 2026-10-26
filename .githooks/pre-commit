@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+repo_root=$(git rev-parse --show-toplevel)
+exec uv run --frozen python -B "$repo_root/scripts/verify.py" pre-commit

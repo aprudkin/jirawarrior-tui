@@ -620,11 +620,60 @@ lock-файлы; PID/аргументы в них не записываются.
 uv sync --frozen --python 3.12
 ```
 
-Полный синтетический набор:
+Установите зависимости разработки и используйте публичный детерминированный runner:
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 uv run --frozen python -m unittest discover -s tests -v
+uv sync --frozen --python 3.12
+PYTHONDONTWRITEBYTECODE=1 uv run --frozen python scripts/verify.py fast
+PYTHONDONTWRITEBYTECODE=1 uv run --frozen python scripts/verify.py profile presentation
+PYTHONDONTWRITEBYTECODE=1 uv run --frozen python scripts/verify.py full
 ```
+
+`fast` запускает быстрые синтетические тестовые модули; `profile NAME` запускает один модуль
+из `tests/test_*.py` (например, `presentation` или `processes`); `full` запускает исходный
+полный unittest discovery. Runner передаёт ненулевой код при сбое. Он не обращается к Jira,
+моделям или браузеру. `full` требует macOS, `lsof`, `ps` и Go Task до запуска: отсутствие prerequisite —
+ненулевой отказ, не зелёный пропуск. Прямой unittest discovery по-прежнему доступен:
+без Task три теста обёрток пропускаются, вне macOS пропускаются process-тесты.
+Итог unittest сохраняет число запусков, пропусков и ошибок; каждый skip означает
+отсутствие проверки, а не успех.
+
+Для автоматического локального барьера установите tracked hook в checkout:
+
+```sh
+python3 scripts/verify.py install-hook
+```
+
+Команда задаёт repository-local `core.hooksPath=.githooks` (общий для worktrees),
+отказываясь заменять существующие чужие hooks. Pre-commit автоматически запускает
+`fast`; unstaged-изменения входов проверки отклоняются, чтобы исправление вне индекса
+не маскировало staged-ошибку. CI выполняет тот же быстрый профиль на push и pull request.
+Это не server-side branch protection: локальные hooks отключаемы, CI не заменяет
+проверку кандидата до продвижения main.
+
+Каждый запуск профиля получает UUID-каталог в Git common directory `check-attempts/`:
+`start.json`, `result.json`, `stdout`, `stderr`, каталоги 0700/файлы 0600. Повторная
+запись по ID отклоняется. В stdout — краткий исход и путь; полные логи остаются
+приватными локальными артефактами. FAIL, TIMEOUT, INTERRUPTED, UNKNOWN и INVALIDATED
+не превращаются в PASS; отсутствие завершённой записи означает UNKNOWN. Команда,
+время, exit status, HEAD, индекс, tracked/nonignored файлы (включая dirty diff),
+окружение и явно объявленные зависимости связаны с результатом. `scripts/check_attempt.py`
+переиспользует одноимённый standalone runner pi-config #88, без глобального журнала
+или зависимости приложения от Pi. При синхронизации runner переносите и его тесты.
+
+Исполнителям достаточно относящегося `profile`; `full` выполняет родитель на
+**окончательном интегрированном commit до продвижения main**. Он включает fast-тесты
+через обычный discovery, без дополнительного fast-прогона. Перед FF проверяйте
+адресный receipt (`verify-full` принимает его ID); изменение кода, fixture, индекса,
+HEAD или учтённого окружения делает его неактуальным. Pre-push в main проверяет тот
+же exact-candidate receipt и не запускает дорогой набор повторно. Между проверкой
+и FF/push сохраняется обычная ответственность за отсутствие конкурентного writer.
+Непроверенные внешние ресурсы, ignored-данные вне объявленных dependencies и временные
+изменения с восстановлением байтов не покрываются snapshot-проверкой.
+
+Для CI используются собственные GitHub job logs; локальные приватные receipts не
+публикуются в публичный репозиторий/артефакты Actions. Установленная команда и live Jira
+остаются отдельными сценариями приёмки, не включёнными в pre-commit.
 
 Обновлением, открытием и добавлением в спринт владеет независимая от Textual `ReviewSession`: TUI
 передаёт ручное обновление и захваченный при выборе снимок задачи, а отображает
