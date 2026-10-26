@@ -58,6 +58,21 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    async def test_ordinary_child_gracefully_releases_with_parent_ignoring_sigint(self):
+        previous_handler = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            async with locked_process(self.root, self.state_dir) as process:
+                lock = next(self.state_dir.glob("*.lock"))
+                owner = await find_lock_owner(lock)
+                self.assertEqual(owner.pid, process.pid)
+                await stop_lock_owner(lock, owner)
+                await asyncio.wait_for(process.wait(), 3)
+                self.assertEqual(process.returncode, 0)
+                self.assertIsNone(await find_lock_owner(lock))
+        finally:
+            signal.signal(signal.SIGINT, previous_handler)
+
     async def test_find_and_stop_exact_owner_without_changing_lock_or_history(self):
         async with locked_process(self.root, self.state_dir) as process:
             lock = next(self.state_dir.glob("*.lock"))
