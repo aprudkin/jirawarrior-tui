@@ -5,12 +5,13 @@ from datetime import datetime, timedelta, timezone
 import re
 
 from rich.text import Text
-from textual import events
+from textual import events, on
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Vertical
 from textual.coordinate import Coordinate
 from textual.message import Message
-from textual.widgets import DataTable, Static
+from textual.widgets import DataTable, Input, Static
 
 from .core import Issue
 from .session import ReviewItem
@@ -158,11 +159,20 @@ class IssueTable(DataTable):
         self._move_issue_cursor(1, edge=True)
 
 
+class SummaryFilterInput(Input):
+    """Keep an explicit exit available while all printable shortcuts are text."""
+
+    BINDINGS = [Binding("ctrl+c", "app.quit", show=False, priority=True)]
+
+
 class OverviewPresentation(Vertical):
     """Render successful review items and own mode, selection, and focus policy."""
 
+    BINDINGS = [Binding("/", "focus_filter", "Фильтр"),
+                Binding("escape", "clear_filter", "Очистить фильтр", show=False)]
     DEFAULT_CSS = """
     OverviewPresentation { height: 1fr; }
+    #summary-filter { display: none; height: 3; }
     #areas { height: 1fr; }
     .area { height: 1fr; min-height: 4; }
     #sprint-area { height: 3; min-height: 0; margin-bottom: 1; }
@@ -176,8 +186,12 @@ class OverviewPresentation(Vertical):
         self.epic_mode = False
         self._items: tuple[ReviewItem, ...] | None = None
         self._suspended = False
+        self._filter_query = ""
+        self._filter_table: IssueTable | None = None
 
     def compose(self) -> ComposeResult:
+        yield SummaryFilterInput(placeholder="Название · Enter — к задачам · Esc — очистить",
+                                 id="summary-filter")
         with Vertical(id="areas"):
             for area, title in (("sprint", "Текущий спринт"), ("other", "Остальные мои задачи"),
                                 ("epic", "Эпики")):
@@ -185,6 +199,45 @@ class OverviewPresentation(Vertical):
                     yield Static(title + " — загрузка…", id=area + "-heading",
                                  classes="heading", markup=False)
                     yield IssueTable(id=area)
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool:
+        if action == "clear_filter":
+            return not self._suspended and self.query_one("#summary-filter", Input).display
+        return not self._suspended
+
+    def action_focus_filter(self) -> None:
+        editor = self.query_one("#summary-filter", Input)
+        if isinstance(self.app.focused, IssueTable):
+            self._filter_table = self.app.focused
+        editor.display = True
+        editor.focus()
+        self.call_after_refresh(self.fit_sprint_area)
+
+    @on(Input.Changed, "#summary-filter")
+    def filter_changed(self, event: Input.Changed) -> None:
+        self._filter_query = event.value.casefold()
+        self._paint(None)
+
+    @on(Input.Submitted, "#summary-filter")
+    def finish_filter(self, event: Input.Submitted) -> None:
+        event.stop()
+        self._focus_tasks()
+
+    def action_clear_filter(self) -> None:
+        editor = self.query_one("#summary-filter", Input)
+        editor.value = ""
+        editor.display = False
+        self._filter_query = ""
+        self._paint(None)
+        self._focus_tasks()
+
+    def _focus_tasks(self) -> None:
+        tables = self._visible_tables()
+        target = self._filter_table
+        if target not in tables or not target.row_count:
+            target = next((table for table in tables if table.row_count), tables[0])
+        target.focus()
+        self.call_after_refresh(self.fit_sprint_area)
 
     @property
     def navigation_suspended(self) -> bool:
@@ -224,6 +277,7 @@ class OverviewPresentation(Vertical):
         self._suspended = True
         for table in self.query(IssueTable):
             table.can_focus = False
+        self.query_one("#summary-filter", Input).can_focus = False
 
     def resume_navigation(self) -> None:
         if not self._suspended:
@@ -232,6 +286,7 @@ class OverviewPresentation(Vertical):
         selected, target = self._suspend_selected, self._suspend_focus
         for table in self.query(IssueTable):
             table.can_focus = True
+        self.query_one("#summary-filter", Input).can_focus = True
         if selected is not None:
             target_table = next((table for table in self._visible_tables()
                                  if selected in table.shown), None)
@@ -301,10 +356,12 @@ class OverviewPresentation(Vertical):
         if selected is None:
             selected = self._selected_key()
         tables = self._visible_tables()
+        matching_items = tuple(item for item in self._items
+                               if self._filter_query in item.issue.summary.casefold())
         ordinary_cells: dict[str, tuple[Text, Text, Text, Text]] = {}
         column_widths = [Text(label).cell_len for label in _COLUMN_LABELS]
         if not self.epic_mode:
-            ordinary_cells = {item.issue.id: _issue_cells(item) for item in self._items
+            ordinary_cells = {item.issue.id: _issue_cells(item) for item in matching_items
                               if item.issue.tracked and not item.issue.is_epic}
             # Both areas share one content grid, measured in terminal cells rather
             # than code points. Explicit widths also shrink when long rows leave.
@@ -320,16 +377,18 @@ class OverviewPresentation(Vertical):
                 epics = sorted((item for item in self._items if item.issue.is_epic),
                                key=lambda item: item.issue.key)
                 children = {item.issue.key: [] for item in epics}
-                for item in self._items:
+                for item in matching_items:
                     if item.issue.tracked and not item.issue.is_epic and item.issue.epic_key in children:
                         children[item.issue.epic_key].append(item)
                 items: list[ReviewItem] = []
                 for epic in epics:
                     tickets = sorted(children[epic.issue.key], key=_item_sort_key)
+                    if not tickets and self._filter_query not in epic.issue.summary.casefold():
+                        continue
                     epic_counts[epic.issue.key] = len(tickets)
                     items.extend((epic, *tickets))
             else:
-                items = sorted((item for item in self._items
+                items = sorted((item for item in matching_items
                                 if item.issue.tracked and not item.issue.is_epic
                                 and bool(item.issue.sprints) == (table.id == "sprint")),
                                key=lambda item: _item_sort_key(item, open_first=table.id == "other"))
@@ -342,12 +401,14 @@ class OverviewPresentation(Vertical):
             names = [_sprint_label(name) for name in sorted({name for i in issues for name in i.sprints})]
             if table.id == "epic":
                 heading = (f"Эпики ({len(epic_counts)}) — мои открытые тикеты ({sum(epic_counts.values())})" +
-                           (" — нет эпиков" if not epic_counts else ""))
+                           ((" — нет совпадений" if self._filter_query else " — нет эпиков")
+                            if not epic_counts else ""))
             else:
                 title = "Текущий спринт" if table.id == "sprint" else "Остальные мои задачи"
                 heading = (f"{title} ({len(issues)})" +
                            (" — " + "; ".join(names) if names else "") +
-                           (" — нет задач" if not issues else ""))
+                           ((" — нет совпадений" if self._filter_query else " — нет задач")
+                            if not issues else ""))
             self.query_one(f"#{table.id}-heading", Static).update(heading)
             for item in items:
                 issue = item.issue
