@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -88,11 +89,31 @@ def input_digest(path, ancestors=frozenset()):
             "executable": bool(path.stat().st_mode & 0o111)}
 
 
+def command_environment():
+    # macOS /usr/bin/git (xcrun) supplies SDK/CPATH and prepends git-core to PATH.
+    # Use that same effective environment for checks AND hook validation; do not
+    # waive compiler variables or ignore changed tool paths to force a match.
+    script = 'import os,json; print(json.dumps(dict(os.environ)))'
+    alias = '!' + shlex.join([sys.executable, '-c', script])
+    raw = subprocess.check_output(['git', '-c', 'alias.check-receipt-env=' + alias,
+                                   'check-receipt-env'], text=True)
+    try:
+        env = json.loads(raw)
+    except ValueError as error:
+        raise ValueError('Could not identify the Git check environment') from error
+    env = {key: value for key, value in env.items() if not key.startswith('GIT_')}
+    # Re-entering Git prepends an identical directory; duplicate search entries
+    # do not alter executable selection, but their order relative to others does.
+    env['PATH'] = os.pathsep.join(dict.fromkeys(env.get('PATH', '').split(os.pathsep)))
+    return env
+
+
 def environment(command, dependencies=()):
     # Values are hashed, never copied to receipts. Shell bookkeeping is not a dependency.
-    env = {key: value for key, value in os.environ.items()
+    effective = command_environment()
+    env = {key: value for key, value in effective.items()
            if key not in {"_", "PWD", "OLDPWD", "SHLVL"} and not key.startswith("GIT_")}
-    executable = shutil.which(command[0])
+    executable = shutil.which(command[0], path=effective.get('PATH'))
     inputs = {str(Path(file).absolute()): input_digest(Path(file)) for file in dependencies}
     return {"variablesSha256": sha(encoded(env)), "platform": platform.platform(),
             "dependencies": inputs, "executable": executable,
@@ -148,7 +169,8 @@ def run(repo, command, label, timeout=600, attempt=None, dependencies=()):
         with (directory / "stdout").open("xb") as out, (directory / "stderr").open("xb") as err:
             os.chmod(out.name, 0o600)
             os.chmod(err.name, 0o600)
-            process = subprocess.Popen(command, cwd=repo, stdout=out, stderr=err, start_new_session=True)
+            process = subprocess.Popen(command, cwd=repo, stdout=out, stderr=err, start_new_session=True,
+                                       env={**command_environment(), 'PWD': str(repo)})
             code = process.wait(timeout=timeout)
             outcome = "PASS" if code == 0 else "INTERRUPTED" if code < 0 else "FAIL"
     except subprocess.TimeoutExpired:

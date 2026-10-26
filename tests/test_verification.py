@@ -37,7 +37,7 @@ class VerificationEntrypointTests(unittest.TestCase):
                               capture_output=True, text=True, check=False)
 
     def run_verify(self, *args):
-        return subprocess.run([sys.executable, str(self.root / "scripts/verify.py"), *args],
+        return subprocess.run(['uv', 'run', '--frozen', 'python', '-B', str(self.root / "scripts/verify.py"), *args],
                               cwd=self.root, env=self.env, capture_output=True, text=True,
                               timeout=30, check=False)
 
@@ -80,8 +80,14 @@ class VerificationEntrypointTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         attempt = json.loads(completed.stdout)["attempt"]
         self.assertEqual(self.run_verify("verify-full", attempt).returncode, 0)
+        remote = self.root / '.git/synthetic-remote.git'
+        self.assertEqual(self.git('init', '--bare', str(remote)).returncode, 0)
+        self.git('remote', 'add', 'synthetic', str(remote))
+        pushed = self.git('push', '--dry-run', 'synthetic', 'HEAD:main')
+        self.assertEqual(pushed.returncode, 0, pushed.stdout + pushed.stderr)
         (self.root / "fixture").write_text("unverified")
         self.assertNotEqual(self.run_verify("verify-full", attempt).returncode, 0)
+        self.assertNotEqual(self.git('push', '--dry-run', 'synthetic', 'HEAD:main').returncode, 0)
 
 
 if __name__ == "__main__":
