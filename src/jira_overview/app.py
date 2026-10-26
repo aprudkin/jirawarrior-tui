@@ -230,11 +230,12 @@ class Overview(App):
             old_key = old_cursor_key if old_cursor_key in table.shown else None
             old_issue_index = sum(
                 table._key_at(row) in table.shown for row in range(old_row))
-            issues = [item.issue for item in self.session.view.items
-                      if bool(item.issue.sprints) == (table.id == "sprint")]
-            grouped: dict[str, list[Issue]] = {}
-            for issue in issues:
-                grouped.setdefault(issue.status, []).append(issue)
+            items = [item for item in self.session.view.items
+                     if bool(item.issue.sprints) == (table.id == "sprint")]
+            items.sort(key=lambda item: (
+                0 if item.new else 1 if item.unread_comments else 2,
+                _status_sort_key(item.issue.status), item.issue.key))
+            issues = [item.issue for item in items]
             table.clear()
             table.shown = {i.id: i for i in issues}
             names = sorted({name for i in issues for name in i.sprints})
@@ -242,19 +243,16 @@ class Overview(App):
             self.query_one(f"#{table.id}-heading", Static).update(
                 f"{title} ({len(issues)})" + (" — " + "; ".join(names) if names else "") +
                 (" — нет задач" if not issues else ""))
-            items_by_id = {item.issue.id: item for item in self.session.view.items}
-            for status in sorted(grouped, key=_status_sort_key):
-                members = grouped[status]
-                for issue in members:
-                    item = items_by_id[issue.id]
-                    emphasis = "bold" if item.new or item.unread_comments else ""
-                    key = Text(issue.key, style=emphasis)
-                    if item.new:
-                        key.append(" NEW", style="bold green")
-                    if item.unread_comments:
-                        key.append(f" +{item.unread_comments} комм.", style="bold yellow")
-                    table.add_row(key, Text(issue.summary, style=emphasis), Text(issue.status),
-                                  Text("; ".join(issue.sprints)), key=issue.id)
+            for item in items:
+                issue = item.issue
+                emphasis = "bold" if item.new or item.unread_comments else ""
+                key = Text(issue.key, style=emphasis)
+                if item.new:
+                    key.append(" NEW", style="bold green")
+                if item.unread_comments:
+                    key.append(f" Comment +{item.unread_comments}", style="bold yellow")
+                table.add_row(key, Text(issue.summary, style=emphasis), Text(issue.status),
+                              Text("; ".join(issue.sprints)), key=issue.id)
             row_by_key = {table._key_at(row): row for row in range(table.row_count)
                           if table._key_at(row) in table.shown}
             target = selected if selected in row_by_key else old_key

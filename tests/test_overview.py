@@ -198,13 +198,13 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
         table = app.query_one("#" + table_id, IssueTable)
         issue_indices = [index for index in range(table.row_count) if table.get_row_at(index)[2]]
         key, summary, status, sprint = table.get_row_at(issue_indices[row_index])
-        marker = (" NEW" if new else "") + (f" +{unread} комм." if unread else "")
+        marker = (" NEW" if new else "") + (f" Comment +{unread}" if unread else "")
         self.assertEqual(key.plain, key.plain.split()[0] + marker)
         for text in (key, summary):
             self.assertEqual(bool(text.get_style_at_offset(app.console, 0).bold), bool(new or unread))
         for text in (status, sprint):
             self.assertFalse(text.get_style_at_offset(app.console, 0).bold)
-        for label, color in (("NEW", "green"), (f"+{unread} комм.", "yellow")):
+        for label, color in (("NEW", "green"), (f"Comment +{unread}", "yellow")):
             if label in key.plain:
                 start = key.plain.index(label)
                 for offset in range(start, start + len(label)):
@@ -231,22 +231,22 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.server.issues[0]["comments"].append(comment(12))
             self.server.issues[-1]["comments"].append(comment(41))
             await self.refresh(app, pilot)
-            expected = [("sprint", 0, False, 1), ("sprint", 1, True, 0),
-                        ("other", 0, False, 0), ("other", 1, True, 1)]
+            expected = [("sprint", 0, True, 0), ("sprint", 1, False, 1),
+                        ("other", 0, True, 1), ("other", 1, False, 0)]
             for _ in range(2):
                 for table_id, row_index, new, unread in expected:
                     with self.subTest(table=table_id, row=row_index):
                         self.assert_row_highlight(app, table_id, row_index, new=new, unread=unread)
                 self.assertEqual([row[0].split()[0] for row in self.issue_rows(app, "sprint")],
-                                 ["DEMO-1", "DEMO-3"])
+                                 ["DEMO-3", "DEMO-1"])
                 self.assertEqual([row[0].split()[0] for row in self.issue_rows(app, "other")],
-                                 ["DEMO-2", "DEMO-4"])
+                                 ["DEMO-4", "DEMO-2"])
                 await self.refresh(app, pilot)
-            await pilot.press("tab", "down")
+            await pilot.press("tab", "ctrl+home")
             self.browser_ok = False
             await pilot.press("enter")
             await self.settled(app, pilot)
-            self.assert_row_highlight(app, "other", 1, new=True, unread=1)
+            self.assert_row_highlight(app, "other", 0, new=True, unread=1)
             self.assertIn("Браузер не принял", self.notice(app))
             self.browser_ok = True
             await pilot.press("enter")
@@ -257,8 +257,8 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.refresh(app, pilot)
             self.assert_row_highlight(app, "other", 1)
         async with self.running() as (app, pilot):
-            self.assert_row_highlight(app, "sprint", 0, unread=1)
-            self.assert_row_highlight(app, "sprint", 1, new=True)
+            self.assert_row_highlight(app, "sprint", 0, new=True)
+            self.assert_row_highlight(app, "sprint", 1, unread=1)
             self.assert_row_highlight(app, "other", 0)
             self.assert_row_highlight(app, "other", 1)
 
@@ -268,9 +268,9 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.refresh(app, pilot)
             self.server.issues[-1]["comments"].append(comment(41))
             await self.refresh(app, pilot)
-            await pilot.press("tab", "down")
+            await pilot.press("tab", "ctrl+home")
             table = app.query_one("#other", IssueTable)
-            self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, "DEMO-4 NEW +1 комм.")
+            self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, "DEMO-4 NEW Comment +1")
             for focused in (True, False):
                 with self.subTest(focused=focused):
                     if not focused:
@@ -278,8 +278,8 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(table.has_focus, focused)
                     rendered = Text.assemble(*[(segment.text, segment.style) for segment in
                                               table.render_line(table.header_height + table.cursor_row)])
-                    self.assertIn("DEMO-4 NEW +1 комм.", rendered.plain)
-                    for label, color in (("NEW", "green"), ("+1 комм.", "yellow")):
+                    self.assertIn("DEMO-4 NEW Comment +1", rendered.plain)
+                    for label, color in (("NEW", "green"), ("Comment +1", "yellow")):
                         start = rendered.plain.index(label)
                         for offset in range(start, start + len(label)):
                             style = rendered.get_style_at_offset(app.console, offset)
@@ -290,7 +290,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(style.bgcolor,
                                          table.get_component_rich_style("datatable--cursor").bgcolor)
             self.assertFalse(self.opened)
-            self.assert_row_highlight(app, "other", 1, new=True, unread=1)
+            self.assert_row_highlight(app, "other", 0, new=True, unread=1)
 
     async def test_highlight_follows_selected_issue_between_status_groups(self):
         async with self.running() as (app, pilot):
@@ -300,19 +300,138 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.refresh(app, pilot)
             self.server.issues[-1]["comments"].append(comment(31))
             await self.refresh(app, pilot)
-            await pilot.press("tab", "down")
+            await pilot.press("tab", "ctrl+home")
             table = app.query_one("#other", IssueTable)
-            self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, "DEMO-3 NEW +1 комм.")
-            self.assert_row_highlight(app, "other", 1, new=True, unread=1)
+            self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, "DEMO-3 NEW Comment +1")
+            self.assert_row_highlight(app, "other", 0, new=True, unread=1)
             self.server.issues[-1]["fields"]["status"]["name"] = "In Progress"
             await self.refresh(app, pilot)
-            self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, "DEMO-3 NEW +1 комм.")
+            self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, "DEMO-3 NEW Comment +1")
             self.assertTrue(all(row[2] for row in self.rows(app, "other")))
             self.assert_row_highlight(app, "other", 0, new=True, unread=1)
             await pilot.press("enter")
             await self.settled(app, pilot)
             self.assertEqual(self.opened, [self.server.url + "/browse/DEMO-3"])
             self.assert_row_highlight(app, "other", 0)
+
+    async def test_local_markers_sort_before_status_in_each_area_and_survive_restart(self):
+        self.server.page_size = 100
+        self.server.issues = []
+        for base, sprints in ((0, [{"id": 1}]), (100, None)):
+            for number, status in ((1, "In Progress"), (2, "To Do"), (3, "In Progress"),
+                                   (4, "Backlog"), (5, "In Progress")):
+                item = issue(base + number, sprints)
+                item["fields"]["status"]["name"] = status
+                self.server.issues.append(item)
+        async with self.running() as (app, pilot):
+            for item in self.server.issues:
+                if int(item["id"]) % 100 in (2, 3):
+                    item["comments"].append(comment(10000 + int(item["id"])))
+            for base, sprints in ((0, [{"id": 1}]), (100, None)):
+                for number, status in ((6, "Zulu"), (7, "Backlog"), (8, "To Do"), (9, "To Do")):
+                    item = issue(base + number, sprints)
+                    item["fields"]["status"]["name"] = status
+                    if number == 9:
+                        item["key"] = f"OTHER-{base + number}"
+                    self.server.issues.append(item)
+            await self.refresh(app, pilot)
+            for item in self.server.issues:
+                if int(item["id"]) % 100 == 7:
+                    item["comments"].extend([comment(10000 + int(item["id"])),
+                                              comment(20000 + int(item["id"]))])
+            await self.refresh(app, pilot)
+            before = {area: self.rows(app, area) for area in ("sprint", "other")}
+            for area, base in (("sprint", 0), ("other", 100)):
+                with self.subTest(area=area):
+                    rows = before[area]
+                    self.assertEqual([row[0] for row in rows], [
+                        f"DEMO-{base + 8} NEW", f"OTHER-{base + 9} NEW",
+                        f"DEMO-{base + 7} NEW Comment +2", f"DEMO-{base + 6} NEW",
+                        f"DEMO-{base + 3} Comment +1", f"DEMO-{base + 2} Comment +1",
+                        f"DEMO-{base + 1}", f"DEMO-{base + 5}", f"DEMO-{base + 4}",
+                    ])
+                    self.assertEqual([row[2] for row in rows], [
+                        "To Do", "To Do", "Backlog", "Zulu", "In Progress", "To Do",
+                        "In Progress", "In Progress", "Backlog",
+                    ])
+                    self.assertEqual(len({row[0].split()[0] for row in rows}), 9)
+                    self.assertIn("(9)", str(app.query_one("#" + area + "-heading", Static).render()))
+                    for index in range(9):
+                        self.assert_row_highlight(app, area, index, new=index < 4,
+                                                  unread=2 if index == 2 else int(index in (4, 5)))
+                    app.query_one("#" + area, IssueTable).focus()
+                    await pilot.press("ctrl+home")
+                    for row in rows:
+                        table = app.query_one("#" + area, IssueTable)
+                        self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, row[0])
+                        await pilot.press("down")
+            self.assertFalse(self.opened)
+            self.server.status = 500
+            await self.refresh(app, pilot)
+            self.assertIn("УСТАРЕЛО", self.status(app))
+            self.assertEqual({area: self.rows(app, area) for area in before}, before)
+            self.server.status = 200
+            await self.refresh(app, pilot)
+            self.assertEqual({area: self.rows(app, area) for area in before}, before)
+        async with self.running() as (app, pilot):
+            self.assertEqual({area: self.rows(app, area) for area in before}, before)
+            self.assertFalse(self.opened)
+
+    async def test_selection_follows_marker_promotion_and_acknowledgment_in_each_area(self):
+        self.server.page_size = 100
+        self.server.issues = [issue(1, [{"id": 1}]), issue(2, [{"id": 1}]),
+                              issue(101), issue(102)]
+        for item in self.server.issues:
+            if int(item["id"]) % 100 == 2:
+                item["fields"]["status"]["name"] = "To Do"
+        async with self.running() as (app, pilot):
+            for area, base, sprints in (("sprint", 0, [{"id": 1}]), ("other", 100, None)):
+                with self.subTest(area=area):
+                    table = app.query_one("#" + area, IssueTable)
+                    table.focus()
+                    await pilot.press("ctrl+end")
+                    self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, f"DEMO-{base + 2}")
+                    added = issue(base + 3, sprints)
+                    added["fields"]["status"]["name"] = "Backlog"
+                    self.server.issues.append(added)
+                    await self.refresh(app, pilot)
+                    self.assertEqual(table.cursor_row, 2)
+                    self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, f"DEMO-{base + 2}")
+                    existing = next(item for item in self.server.issues if item["id"] == str(base + 2))
+                    existing["comments"].append(comment(10000 + base))
+                    added["comments"].append(comment(20000 + base))
+                    await self.refresh(app, pilot)
+                    self.assertEqual(table.cursor_row, 1)
+                    self.assertEqual(table.get_row_at(table.cursor_row)[0].plain,
+                                     f"DEMO-{base + 2} Comment +1")
+                    await pilot.press("ctrl+home")
+                    before = self.rows(app, area)
+                    self.browser_ok = False
+                    await pilot.press("enter")
+                    await self.settled(app, pilot)
+                    self.assertEqual(self.rows(app, area), before)
+                    self.assertEqual(table.cursor_row, 0)
+                    self.browser_ok = True
+                    with patch("jira_overview.core.os.replace", side_effect=OSError("synthetic failure")):
+                        await pilot.press("enter")
+                        await self.settled(app, pilot)
+                    self.assertEqual(self.rows(app, area), before)
+                    self.assertEqual(table.cursor_row, 0)
+                    self.assertIn("НЕ сохранены", self.notice(app))
+                    await pilot.press("enter")
+                    await self.settled(app, pilot)
+                    self.assertEqual(self.opened[-1], self.server.url + f"/browse/DEMO-{base + 3}")
+                    self.assertEqual(table.cursor_row, 2)
+                    self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, f"DEMO-{base + 3}")
+                    self.assertEqual([row[0] for row in self.rows(app, area)], [
+                        f"DEMO-{base + 2} Comment +1", f"DEMO-{base + 1}", f"DEMO-{base + 3}",
+                    ])
+                    await pilot.press("ctrl+home", "enter")
+                    await self.settled(app, pilot)
+                    self.assertEqual(table.cursor_row, 1)
+                    self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, f"DEMO-{base + 2}")
+                    self.assertEqual([row[0] for row in self.rows(app, area)],
+                                     [f"DEMO-{base + number}" for number in (1, 2, 3)])
 
     async def test_status_groups_are_exact_ordered_and_keep_issue_order_and_markers(self):
         self.server.issues = [
@@ -404,9 +523,9 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.server.issues[3]["comments"].append(comment(41))
             await self.refresh(app, pilot)
             self.assertEqual(table.row_count, len(expected))
-            self.assertEqual(table.cursor_row, 1)
-            self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, "DEMO-4 +1 комм.")
-            self.assert_row_highlight(app, "sprint", 1, unread=1)
+            self.assertEqual(table.cursor_row, 0)
+            self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, "DEMO-4 Comment +1")
+            self.assert_row_highlight(app, "sprint", 0, unread=1)
             await pilot.press("enter")
             await self.settled(app, pilot)
             self.assertEqual(self.opened, [self.server.url + "/browse/DEMO-4"])
@@ -515,7 +634,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("DEMO-1", str(self.rows(app, "sprint")))
             self.assertIn("DEMO-2", str(self.rows(app, "other")))
             self.assertNotIn("NEW", self.visible(app))
-            self.assertNotIn("комм.", self.visible(app))
+            self.assertNotIn("Comment", self.visible(app))
             self.assertIn("Synthetic User", self.status(app))
             self.assertIn("(1)", str(app.query_one("#sprint-heading", Static).render()))
             self.assertTrue(any(p.get("startAt") == ["2"] for _, path, p, _ in self.server.requests if path.endswith("/comment")))
@@ -611,17 +730,17 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.server.issues[0]["comments"].append(comment(12))
             await self.refresh(app, pilot)
             self.assertEqual(table.cursor_row, len(expected) - 1)
-            self.assertIn("+1 комм.", self.visible(app))
+            self.assertIn("Comment +1", self.visible(app))
             await pilot.press("ctrl+home")
             for y in (0, table.header_height + table.row_count):
                 await pilot.click("#other", offset=(5, y))
                 await self.settled(app, pilot)
                 self.assertEqual(len(self.opened), 1)
-                self.assertIn("+1 комм.", self.visible(app))
+                self.assertIn("Comment +1", self.visible(app))
             await pilot.click("#other", offset=(5, table.header_height))
             await self.settled(app, pilot)
             self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-1")
-            self.assertNotIn("+1 комм.", self.visible(app))
+            self.assertNotIn("Comment +1", self.visible(app))
             self.assertEqual(table.cursor_row, 0)
 
     async def test_enter_and_real_mouse_click_acknowledge(self):
@@ -631,7 +750,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await self.settled(app, pilot)
             self.assertEqual(self.opened, [self.server.url + "/browse/DEMO-1"])
-            self.assertNotIn("комм.", self.visible(app))
+            self.assertNotIn("Comment", self.visible(app))
             self.assertEqual(self.notice(app), "")
             await pilot.click("#other", offset=(5, 1))
             await self.settled(app, pilot)
@@ -653,10 +772,10 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(0.01)
                 if not app.refreshing:
                     break
-            self.assertIn("+2 комм.", self.visible(app))
+            self.assertIn("Comment +2", self.visible(app))
             self.browser_gate.set()
             await self.settled(app, pilot)
-            self.assertIn("+1 комм.", self.visible(app))
+            self.assertIn("Comment +1", self.visible(app))
 
     async def test_delayed_row_event_opens_issue_captured_before_repaint(self):
         entered, release = asyncio.Event(), asyncio.Event()
@@ -694,9 +813,9 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.server.user = "another"
             await self.refresh(app, pilot)
             self.assertIn("Учётная запись изменилась", self.status(app))
-            self.assertIn("+1 комм.", self.visible(app))
+            self.assertIn("Comment +1", self.visible(app))
         async with self.running() as (app, pilot):
-            self.assertNotIn("комм.", self.visible(app))
+            self.assertNotIn("Comment", self.visible(app))
             self.assertEqual(len(list(self.state_dir.glob("*.json"))), 2)
 
     async def test_http_errors_keep_snapshot_and_recover(self):
@@ -733,12 +852,12 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("enter")
                 await self.settled(app, pilot)
                 self.assertIn("НЕ сохранены", self.notice(app))
-                self.assertIn("+1 комм.", self.visible(app))
+                self.assertIn("Comment +1", self.visible(app))
                 self.assertEqual(state_path.read_bytes(), before)
                 self.assertNotIn("private path", self.notice(app))
             await pilot.press("enter")
             await self.settled(app, pilot)
-            self.assertNotIn("комм.", self.visible(app))
+            self.assertNotIn("Comment", self.visible(app))
         state_path.write_text("broken state")
         async with self.running() as (app, pilot):
             self.assertIn("повреждено", self.status(app))
@@ -826,16 +945,16 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
         async with self.running() as (app, pilot):
             self.server.issues.append(issue(4))
             await self.refresh(app, pilot)
-            await pilot.press("tab", "down", "enter")
+            await pilot.press("tab", "ctrl+home", "enter")
             await self.settled(app, pilot)
             self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-4")
             self.assertNotIn("NEW", self.visible(app))
             self.server.issues[-1]["comments"].append(comment(41))
             await self.refresh(app, pilot)
-            self.assertIn("DEMO-4 +1 комм.", self.visible(app))
+            self.assertIn("DEMO-4 Comment +1", self.visible(app))
         async with self.running() as (app, pilot):
             self.assertNotIn("NEW", self.visible(app))
-            self.assertIn("+1 комм.", self.visible(app))
+            self.assertIn("Comment +1", self.visible(app))
 
     async def test_instance_isolation_and_large_retry_after(self):
         async with self.running() as (app, pilot):
