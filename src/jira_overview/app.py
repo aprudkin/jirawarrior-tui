@@ -24,7 +24,7 @@ from .processes import LockOwner
 from .session import ReviewItem, ReviewSession
 from .settings import (DEFAULT_REFRESH_SECONDS, read_refresh_seconds,
                        validate_refresh_seconds, write_refresh_seconds)
-from .themes import ThemePanel, read_theme, write_theme
+from .themes import ADDITIONAL_THEMES, ThemePanel, read_theme, write_theme
 
 
 _COLUMN_LABELS = ("Тикет", "Название", "Статус")
@@ -288,6 +288,8 @@ class Overview(App):
     def __init__(self, jira: Jira, state_dir: Path, interval: float = DEFAULT_REFRESH_SECONDS,
                  browser: Callable[[str], Awaitable[bool]] = open_browser):
         super().__init__()
+        for theme in ADDITIONAL_THEMES:
+            self.register_theme(theme)
         self.session = ReviewSession(jira, state_dir, interval, browser, self.session_changed)
         self._painted_items = None
         self._refresh_spinner = Spinner("dots", text="Updating", style="magenta")

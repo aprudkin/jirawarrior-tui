@@ -5,7 +5,7 @@ description = "Read-only Jira Server/Data Center overview with local unread mark
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 authors = [{name = "Alexey Prudkin"}]
 classifiers = [
     "Operating System :: MacOS :: MacOS X",

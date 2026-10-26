@@ -17,6 +17,78 @@ from textual.widgets.option_list import Option
 from .core import OverviewError
 
 
+# Static adaptations, not editor/terminal plugins. Pinned upstream sources and
+# their MIT notices are included in THIRD_PARTY_NOTICES.md (also in the wheel).
+ADDITIONAL_THEMES = (
+    Theme(
+        name="rose-pine", primary="#9ccfd8", secondary="#c4a7e7", accent="#ebbcba",
+        foreground="#e0def4", background="#191724", surface="#1f1d2e", panel="#26233a",
+        success="#9ccfd8", warning="#f6c177", error="#eb6f92",
+        variables={
+            "block-cursor-background": "#26233a",
+            "block-cursor-foreground": "#e0def4",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#26233a",
+        },
+    ),
+    Theme(
+        name="rose-pine-dawn", primary="#286983", secondary="#907aa9", accent="#b4637a",
+        foreground="#464261", background="#faf4ed", surface="#fffaf3", panel="#f2e9e1",
+        success="#286983", warning="#ea9d34", error="#b4637a", dark=False,
+        variables={
+            "block-cursor-background": "#f2e9e1",
+            "block-cursor-foreground": "#464261",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#f2e9e1",
+        },
+    ),
+    Theme(
+        name="everforest-dark", primary="#a7c080", secondary="#7fbbb3", accent="#d699b6",
+        foreground="#d3c6aa", background="#2d353b", surface="#343f44", panel="#3d484d",
+        success="#a7c080", warning="#dbbc7f", error="#e67e80",
+        variables={
+            "block-cursor-background": "#232a2e",
+            "block-cursor-foreground": "#d3c6aa",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#232a2e",
+        },
+    ),
+    Theme(
+        name="everforest-light", primary="#3a94c5", secondary="#35a77c", accent="#df69ba",
+        foreground="#5c6a72", background="#fdf6e3", surface="#f4f0d9", panel="#efebd4",
+        success="#8da101", warning="#dfa000", error="#f85552", dark=False,
+        variables={
+            "block-cursor-background": "#efebd4",
+            "block-cursor-foreground": "#5c6a72",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#efebd4",
+        },
+    ),
+    Theme(
+        name="kanagawa-wave", primary="#7e9cd8", secondary="#957fb8", accent="#e6c384",
+        foreground="#dcd7ba", background="#1f1f28", surface="#16161d", panel="#2a2a37",
+        success="#98bb6c", warning="#ff9e3b", error="#e82424",
+        variables={
+            "block-cursor-background": "#2a2a37",
+            "block-cursor-foreground": "#dcd7ba",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#2a2a37",
+        },
+    ),
+    Theme(
+        name="gruvbox-light", primary="#076678", secondary="#427b58", accent="#8f3f71",
+        foreground="#3c3836", background="#fbf1c7", surface="#ebdbb2", panel="#d5c4a1",
+        success="#79740e", warning="#b57614", error="#9d0006", dark=False,
+        variables={
+            "block-cursor-background": "#d5c4a1",
+            "block-cursor-foreground": "#3c3836",
+            "block-cursor-text-style": "none",
+            "block-cursor-blurred-background": "#d5c4a1",
+        },
+    ),
+)
+
+
 def read_theme(path: Path, available: dict[str, Theme]) -> str | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))

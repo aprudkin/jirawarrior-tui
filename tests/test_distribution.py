@@ -23,6 +23,17 @@ class DistributionTests(unittest.TestCase):
             [(name, "jira_overview.__main__:main") for name in COMMANDS],
         )
 
+    def test_palette_licenses_are_included_in_the_distribution(self):
+        distribution = metadata.distribution("jirawarrior-tui")
+        notices = [path for path in distribution.files
+                   if str(path).endswith(".dist-info/licenses/THIRD_PARTY_NOTICES.md")]
+        self.assertEqual(len(notices), 1)
+        content = distribution.locate_file(notices[0]).read_text()
+        for attribution in ("Copyright (c) mvllow", "Copyright (c) 2019 sainnhe",
+                            "Copyright (c) 2021 Tommaso Laurenzi", "Author: morhetz"):
+            self.assertIn(attribution, content)
+        self.assertIn("Permission is hereby granted", content)
+
     def test_removed_command_is_not_installed(self):
         self.assertFalse(os.path.lexists(Path(sys.executable).parent / "jira-overview"))
 

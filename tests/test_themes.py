@@ -8,11 +8,34 @@ import unittest
 from unittest.mock import patch
 from xml.etree import ElementTree
 
+from rich.color import Color
+from rich.text import Text
+from textual.color import Color as UIColour
 from textual.widgets import OptionList
 
 from jira_overview.app import IssueTable, Overview
 from jira_overview.core import Jira
-from test_overview import Server, TOKEN, issue
+from test_overview import Server, TOKEN, comment, issue
+
+
+# Independent expectations: names, mode and upstream base/text colours.
+EXTRA_THEMES = {
+    "rose-pine": (True, "#191724", "#e0def4"),
+    "rose-pine-dawn": (False, "#faf4ed", "#464261"),
+    "everforest-dark": (True, "#2d353b", "#d3c6aa"),
+    "everforest-light": (False, "#fdf6e3", "#5c6a72"),
+    "kanagawa-wave": (True, "#1f1f28", "#dcd7ba"),
+    "gruvbox-light": (False, "#fbf1c7", "#3c3836"),
+}
+
+
+def contrast(foreground, background):
+    def luminance(color):
+        channels = [component / 255 for component in color.get_truecolor()]
+        linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return sum(c * weight for c, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
+    light, dark = sorted((luminance(foreground), luminance(background)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
 
 
 class ThemeTests(unittest.IsolatedAsyncioTestCase):
@@ -53,6 +76,107 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
     def screenshot_text(self, app):
         root = ElementTree.fromstring(app.export_screenshot())
         return " ".join("".join(node.text or "" for node in root.iter("{http://www.w3.org/2000/svg}text")).split())
+
+    async def select_theme(self, app, pilot, name):
+        choices = app.query_one("#theme-list", OptionList)
+        names = [option.id for option in choices.options if not option.disabled]
+        await pilot.press("home", *(["down"] * names.index(name)))
+        self.assertEqual(self.highlighted(app), name)
+        self.assertEqual(app.theme, name)
+
+    async def test_extra_theme_inventory_and_default(self):
+        async with self.running() as (app, pilot):
+            self.assertEqual(app.theme, "textual-dark")
+            themes = {name: theme for name, theme in app.available_themes.items() if name != "textual-ansi"}
+            self.assertEqual(len(themes), 17)
+            self.assertEqual(sum(theme.dark for theme in themes.values()), 11)
+            for name, (dark, background, foreground) in EXTRA_THEMES.items():
+                with self.subTest(theme=name):
+                    theme = themes[name]
+                    self.assertEqual(theme.dark, dark)
+                    self.assertEqual(theme.background.lower(), background)
+                    self.assertEqual(theme.foreground.lower(), foreground)
+
+    async def test_each_extra_theme_previews_cancels_saves_and_restarts(self):
+        for name in EXTRA_THEMES:
+            with self.subTest(theme=name):
+                async with self.running() as (app, pilot):
+                    original = app.theme
+                    table = app.query_one("#other", IssueTable)
+                    table.focus()
+                    before_history, before_requests = self.history(), list(self.server.requests)
+                    await pilot.press("t")
+                    await self.select_theme(app, pilot, name)
+                    self.assertEqual(app.screen.styles.background, UIColour.parse(EXTRA_THEMES[name][1]))
+                    await pilot.press("escape")
+                    self.assertEqual(app.theme, original)
+                    self.assertIs(app.focused, table)
+                    await pilot.press("t")
+                    await self.select_theme(app, pilot, name)
+                    await pilot.press("enter")
+                    self.assertEqual(json.loads(self.preference.read_text()), {"version": 1, "theme": name})
+                    self.assertEqual(self.preference.stat().st_mode & 0o777, 0o600)
+                    self.assertEqual(self.history(), before_history)
+                    self.assertEqual(self.server.requests, before_requests)
+                    self.assertFalse(self.opened)
+                async with self.running() as (app, pilot):
+                    self.assertEqual(app.theme, name)
+                    await pilot.press("t")
+                    self.assertEqual(self.highlighted(app), name)
+                    await pilot.press("escape", "s")
+                    self.assertTrue(app.query_one("#settings").display)
+                    self.assertIn("Интервал обновления", self.screenshot_text(app))
+                    await pilot.press("enter", "ctrl+shift+a", "0", "enter")
+                    # The rendered sidebar wraps this message across lines.
+                    self.assertRegex(self.screenshot_text(app), r"до 1440.*минут\.")
+                    self.assertFalse((self.state_dir / "settings.json").exists())
+                    await pilot.press("escape")
+                    self.assertEqual(app.theme, name)
+
+    async def test_extra_themes_keep_table_text_markers_and_cursor_readable(self):
+        async with self.running() as (app, pilot):
+            self.server.issues.append(issue(4))
+            for add_comment in (False, True):
+                if add_comment:
+                    self.server.issues[-1]["comments"].append(comment(41))
+                await pilot.press("r")
+                for _ in range(300):
+                    await pilot.pause(0.01)
+                    if not app.refreshing:
+                        break
+                self.assertFalse(app.refreshing)
+            table = app.query_one("#other", IssueTable)
+            before_history, before_requests = self.history(), list(self.server.requests)
+            for name in EXTRA_THEMES:
+                with self.subTest(theme=name):
+                    await pilot.press("t")
+                    await self.select_theme(app, pilot, name)
+                    await pilot.press("enter")
+                    self.assertIn("Synthetic task 4", self.screenshot_text(app))
+                    for cursor_row in (0, 1):
+                        for focused in (True, False):
+                            table.move_cursor(row=cursor_row)
+                            (table if focused else app.query_one("#sprint")).focus()
+                            await pilot.pause()
+                            rendered = Text.assemble(*[(s.text, s.style) for s in table.render_line(table.header_height)])
+                            self.assertIn("DEMO-4 NEW Comment +1", rendered.plain)
+                            key_style = rendered.get_style_at_offset(app.console, rendered.plain.index("DEMO-4"))
+                            self.assertGreaterEqual(contrast(key_style.color, key_style.bgcolor), 4.5, name)
+                            for label, color in (("NEW", "green"), ("Comment +1", "yellow")):
+                                start = rendered.plain.index(label)
+                                for offset in range(start, start + len(label)):
+                                    style = rendered.get_style_at_offset(app.console, offset)
+                                    self.assertTrue(style.bold)
+                                    self.assertEqual(style.color, Color.parse(color))
+                                    # Named ANSI marker colours belong to the terminal palette;
+                                    # retain their colour/bold/text contract, not a universal
+                                    # contrast claim based on Rich's fallback ANSI RGB values.
+                                    self.assertNotEqual(style.color.get_truecolor(), style.bgcolor.get_truecolor())
+                            if focused and cursor_row == 0:
+                                self.assertEqual(key_style.bgcolor, table.get_component_rich_style("datatable--cursor").bgcolor)
+                    self.assertEqual(self.history(), before_history)
+                    self.assertEqual(self.server.requests, before_requests)
+                    self.assertFalse(self.opened)
 
     async def test_palette_is_gone_from_bindings_footer_and_actions(self):
         async with self.running() as (app, pilot):
@@ -104,7 +228,9 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("pagedown", "pageup", "down", "up")
             self.assertEqual(app.theme, self.highlighted(app))
             self.assertFalse(app.query_one("#theme-list", OptionList).highlighted_option.disabled)
-            await pilot.press("end", "up", "up", "up")
+            light_count = sum(not theme.dark for name, theme in app.available_themes.items()
+                              if name != "textual-ansi")
+            await pilot.press("end", *(["up"] * light_count))
             self.assertEqual(app.theme, "tokyo-night")  # skips the light-group heading
             self.assertEqual(self.server.requests, before_requests)
             self.assertEqual(self.history(), before_history)
