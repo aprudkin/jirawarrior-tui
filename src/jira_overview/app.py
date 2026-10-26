@@ -8,6 +8,7 @@ from typing import Awaitable, Callable
 
 from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Vertical
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Footer, Static
@@ -29,6 +30,11 @@ def _status_sort_key(status: str) -> tuple[int, str, str]:
     rank = next((index for index, names in enumerate(_STATUS_PRIORITIES)
                  if folded in names), len(_STATUS_PRIORITIES))
     return rank, folded, status
+
+
+def _item_sort_key(item):
+    return (0 if item.new else 1 if item.unread_comments else 2,
+            _status_sort_key(item.issue.status), item.issue.key)
 
 
 async def open_browser(url: str) -> bool:
@@ -123,11 +129,14 @@ class Overview(App):
         min-height: 0;
         margin-bottom: 1;
     }
+    #epic-area { display: none; }
     .heading { height: auto; max-height: 3; text-style: bold; }
     IssueTable { height: 1fr; }
     Footer { height: 1; }
     """
     BINDINGS = [("q", "quit", "Выход"), ("r", "refresh", "Обновить"),
+                ("e", "toggle_epics", "Эпики / список"),
+                Binding("е", "toggle_epics", show=False),
                 ("tab", "focus_next", "Область"), ("enter", "noop", "Открыть")]
 
     def __init__(self, jira: Jira, state_dir: Path, interval: float = 60,
@@ -135,15 +144,16 @@ class Overview(App):
         super().__init__()
         self.session = ReviewSession(jira, state_dir, interval, browser, self.session_changed)
         self._painted_items = None
+        self.epic_mode = False
 
     def compose(self) -> ComposeResult:
         yield Static("Загрузка Jira…", id="connection", markup=False)
         yield Static("", id="notice", markup=False)
         with Vertical(id="areas"):
-            for area in ("sprint", "other"):
+            for area, title in (("sprint", "Текущий спринт"), ("other", "Остальные мои задачи"),
+                                ("epic", "Эпики")):
                 with Vertical(id=area + "-area", classes="area"):
-                    yield Static("Текущий спринт — загрузка…" if area == "sprint" else
-                                 "Остальные мои задачи — загрузка…", id=area + "-heading",
+                    yield Static(title + " — загрузка…", id=area + "-heading",
                                  classes="heading", markup=False)
                     yield IssueTable(id=area)
         yield Footer()
@@ -174,6 +184,8 @@ class Overview(App):
         self.call_after_refresh(self.fit_sprint_area)
 
     def fit_sprint_area(self):
+        if self.epic_mode:
+            return
         table = self.query_one("#sprint", IssueTable)
         heading = self.query_one("#sprint-heading", Static)
         other = self.query_one("#other", IssueTable)
@@ -195,6 +207,20 @@ class Overview(App):
     def action_refresh(self):
         self.session.refresh()
 
+    def action_toggle_epics(self):
+        focused = self.focused if isinstance(self.focused, IssueTable) else None
+        selected = focused._key_at(focused.cursor_row) if focused and focused.row_count else None
+        self.epic_mode = not self.epic_mode
+        for area in ("sprint", "other", "epic"):
+            self.query_one(f"#{area}-area").display = (area == "epic") == self.epic_mode
+        self.paint_snapshot(selected)
+        tables = [self.query_one("#epic", IssueTable)] if self.epic_mode else [
+            self.query_one("#sprint", IssueTable), self.query_one("#other", IssueTable)]
+        if self.focused not in tables:
+            target = next((table for table in tables if selected in table.shown), None)
+            (target or next((table for table in tables if table.row_count), tables[0])).focus()
+        self.call_after_refresh(self.fit_sprint_area)
+
     def paint_view(self):
         view = self.session.view
         if view.closed or not self.is_mounted:
@@ -214,13 +240,13 @@ class Overview(App):
         notice.display = bool(view.open_notice)
         self.call_after_refresh(self.fit_sprint_area)
 
-    def paint_snapshot(self):
+    def paint_snapshot(self, selected=None):
         if not self.session.view.snapshot:
             return
-        tables = list(self.query(IssueTable))
+        tables = [self.query_one("#epic", IssueTable)] if self.epic_mode else [
+            self.query_one("#sprint", IssueTable), self.query_one("#other", IssueTable)]
         focused = self.focused if isinstance(self.focused, IssueTable) else None
-        selected = None
-        if focused and focused.row_count:
+        if selected is None and focused and focused.row_count:
             selected = focused._key_at(focused.cursor_row)
             if selected not in focused.shown:
                 selected = None
@@ -230,28 +256,47 @@ class Overview(App):
             old_key = old_cursor_key if old_cursor_key in table.shown else None
             old_issue_index = sum(
                 table._key_at(row) in table.shown for row in range(old_row))
-            items = [item for item in self.session.view.items
-                     if bool(item.issue.sprints) == (table.id == "sprint")]
-            items.sort(key=lambda item: (
-                0 if item.new else 1 if item.unread_comments else 2,
-                _status_sort_key(item.issue.status), item.issue.key))
+            epic_counts = {}
+            if table.id == "epic":
+                epics = sorted((item for item in self.session.view.items if item.issue.is_epic),
+                               key=lambda item: item.issue.key)
+                children = {item.issue.key: [] for item in epics}
+                for item in self.session.view.items:
+                    if item.issue.tracked and not item.issue.is_epic and item.issue.epic_key in children:
+                        children[item.issue.epic_key].append(item)
+                items = []
+                for epic in epics:
+                    tickets = sorted(children[epic.issue.key], key=_item_sort_key)
+                    epic_counts[epic.issue.key] = len(tickets)
+                    items.extend((epic, *tickets))
+            else:
+                items = sorted((item for item in self.session.view.items
+                                if item.issue.tracked and not item.issue.is_epic
+                                and bool(item.issue.sprints) == (table.id == "sprint")),
+                               key=_item_sort_key)
             issues = [item.issue for item in items]
             table.clear()
             table.shown = {i.id: i for i in issues}
             names = sorted({name for i in issues for name in i.sprints})
-            title = "Текущий спринт" if table.id == "sprint" else "Остальные мои задачи"
-            self.query_one(f"#{table.id}-heading", Static).update(
-                f"{title} ({len(issues)})" + (" — " + "; ".join(names) if names else "") +
-                (" — нет задач" if not issues else ""))
+            if table.id == "epic":
+                heading = (f"Эпики ({len(epic_counts)}) — мои открытые тикеты ({sum(epic_counts.values())})" +
+                           (" — нет эпиков" if not epic_counts else ""))
+            else:
+                title = "Текущий спринт" if table.id == "sprint" else "Остальные мои задачи"
+                heading = (f"{title} ({len(issues)})" + (" — " + "; ".join(names) if names else "") +
+                           (" — нет задач" if not issues else ""))
+            self.query_one(f"#{table.id}-heading", Static).update(heading)
             for item in items:
                 issue = item.issue
-                emphasis = "bold" if item.new or item.unread_comments else ""
-                key = Text(issue.key, style=emphasis)
+                emphasis = "bold" if issue.is_epic or item.new or item.unread_comments else ""
+                indent = "  " if table.id == "epic" and not issue.is_epic else ""
+                key = Text(indent + issue.key, style="bold cyan" if issue.is_epic else emphasis)
                 if item.new:
                     key.append(" NEW", style="bold green")
                 if item.unread_comments:
                     key.append(f" Comment +{item.unread_comments}", style="bold yellow")
-                table.add_row(key, Text(issue.summary, style=emphasis), Text(issue.status),
+                summary = issue.summary + (f" ({epic_counts[issue.key]})" if issue.is_epic else "")
+                table.add_row(key, Text(summary, style=emphasis), Text(issue.status),
                               Text("; ".join(issue.sprints)), key=issue.id)
             row_by_key = {table._key_at(row): row for row in range(table.row_count)
                           if table._key_at(row) in table.shown}

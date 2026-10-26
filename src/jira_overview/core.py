@@ -59,6 +59,11 @@ class Issue:
     sprints: tuple[str, ...]
     comments: frozenset[str]
     foreign_comments: frozenset[str]
+    is_epic: bool = False
+    epic_key: str | None = None
+    # Captured with the displayed issue: context must never acknowledge a later
+    # observed version of the same issue after a concurrent refresh.
+    tracked: bool = True
 
 
 @dataclass(frozen=True)
@@ -160,15 +165,81 @@ class Jira:
         fields = await self.get("/rest/api/2/field")
         if not isinstance(fields, list):
             raise ValueError()
-        sprint_fields = [required_text(f, "id") for f in fields
-                         if f.get("schema", {}).get("custom") == "com.pyxis.greenhopper.jira:gh-sprint"]
-        if len(sprint_fields) != 1:
-            raise OverviewError("Не удалось однозначно определить поле Sprint по метаданным Jira.")
-        sprint_field = sprint_fields[0]
+        detected = []
+        for kind, label in (("gh-sprint", "Sprint"), ("gh-epic-label", "Epic Name"),
+                            ("gh-epic-link", "Epic Link")):
+            matches = [required_text(f, "id") for f in fields
+                       if f.get("schema", {}).get("custom") == "com.pyxis.greenhopper.jira:" + kind]
+            if len(matches) != 1:
+                raise OverviewError(f"Не удалось однозначно определить поле {label} по метаданным Jira.")
+            detected.append(matches[0])
+        sprint_field, epic_name_field, epic_link_field = detected
+        context_fields = "summary,status,parent," + epic_name_field + "," + epic_link_field
         raw = await self.pages("/rest/api/2/search", "issues", {
             "jql": "assignee = currentUser() AND resolution = Unresolved ORDER BY key ASC",
-            "fields": "summary,status," + sprint_field,
+            "fields": context_fields + "," + sprint_field,
         })
+        by_key: dict[str, dict] = {}
+        ids: dict[str, str] = {}
+
+        def checked_key(value):
+            if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*-\d+", value):
+                raise ValueError()
+            return value
+
+        def cache(item):
+            key = checked_key(required_text(item, "key"))
+            iid = required_text(item, "id")
+            if (not iid.isdigit() or key in by_key or iid in ids
+                    or not isinstance(item["fields"], dict)):
+                raise ValueError()
+            by_key[key], ids[iid] = item, key
+            return item
+
+        for item in raw:
+            cache(item)
+
+        def is_epic(item):
+            # Epic Name is the mandatory, Epic-only locked Jira Software field.
+            # Its schema is stable even when type/field names are translated.
+            name = item["fields"].get(epic_name_field)
+            if name is not None and (not isinstance(name, str) or not name):
+                raise ValueError()
+            return name is not None
+
+        async def related(key):
+            key = checked_key(key)
+            if key not in by_key:
+                item = await self.get("/rest/api/2/issue/" + quote(key, safe=""),
+                                      {"fields": context_fields})
+                if item["key"] != key:
+                    raise ValueError()
+                cache(item)
+            return by_key[key]
+
+        async def parent_epic(item):
+            visited = set()
+            while True:
+                key = item["key"]
+                if key in visited:
+                    raise ValueError()
+                visited.add(key)
+                if is_epic(item):
+                    return key
+                data = item["fields"]
+                link = data.get(epic_link_field)
+                if link is not None:
+                    link = checked_key(link)
+                    if link in visited or not is_epic(await related(link)):
+                        raise ValueError()
+                    return link
+                parent = data.get("parent")
+                if parent is None:
+                    return None
+                item = await related(required_text(parent, "key"))
+
+        memberships = {item["key"]: None if is_epic(item) else await parent_epic(item)
+                       for item in raw}
         sprint_cache: dict[str, dict] = {}
         issues = []
         for item in raw:
@@ -215,7 +286,15 @@ class Jira:
                     foreign_ids.add(cid)
             issues.append(Issue(issue_id, key, plain(required_text(data, "summary")),
                                 plain(required_text(data["status"], "name")),
-                                tuple(sorted(set(sprints))), frozenset(all_ids), frozenset(foreign_ids)))
+                                tuple(sorted(set(sprints))), frozenset(all_ids), frozenset(foreign_ids),
+                                is_epic(item), memberships[key]))
+        own_keys = {item["key"] for item in raw}
+        for key in sorted(set(memberships.values()) - {None} - own_keys):
+            item = by_key[key]
+            data = item["fields"]
+            issues.append(Issue(item["id"], key, plain(required_text(data, "summary")),
+                                plain(required_text(data["status"], "name")), (),
+                                frozenset(), frozenset(), is_epic=True, tracked=False))
         return Snapshot(user_id, plain(required_text(me, "displayName")),
                         tuple(sorted(issues, key=lambda i: i.key)))
 
@@ -295,16 +374,20 @@ class State:
     def ingest(self, snapshot: Snapshot):
         data = copy.deepcopy(self.data)
         for issue in snapshot.issues:
-            if issue.id not in data["issues"]:
+            if issue.tracked and issue.id not in data["issues"]:
                 data["issues"][issue.id] = {"new": data["baseline"], "seen": sorted(issue.comments)}
         data["baseline"] = True
         self.save(data)
 
     def markers(self, issue: Issue) -> tuple[bool, int]:
+        if not issue.tracked:
+            return False, 0
         record = self.data["issues"][issue.id]
         return record["new"], len(issue.foreign_comments - set(record["seen"]))
 
     def acknowledge(self, shown: Issue):
+        if not shown.tracked:
+            return
         data = copy.deepcopy(self.data)
         record = data["issues"][shown.id]
         record["new"] = False

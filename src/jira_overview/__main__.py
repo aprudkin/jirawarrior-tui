@@ -39,8 +39,9 @@ def run_overview(app):
 async def check(jira):
     try:
         snapshot = await jira.snapshot()
-        print(f"GET-проверка успешна: задач {len(snapshot.issues)}, "
-              f"в активных спринтах {sum(bool(i.sprints) for i in snapshot.issues)}. "
+        own = [issue for issue in snapshot.issues if issue.tracked]
+        print(f"GET-проверка успешна: задач {len(own)}, "
+              f"в активных спринтах {sum(bool(i.sprints) for i in own)}. "
               "Комментарии загружены полностью. Состояние не изменялось.")
     finally:
         await jira.close()

@@ -31,9 +31,11 @@ def comment(cid, author="other"):
     return {"id": str(cid), "author": {"key": author}, "created": "2026-01-01T12:00:00Z", "body": BODY}
 
 
-def issue(i, sprints=None, comments=None, summary=None):
+def issue(i, sprints=None, comments=None, summary=None, *, epic=False, epic_key=None, parent=None):
     return {"id": str(i), "key": f"DEMO-{i}", "fields": {
         "summary": summary or f"Synthetic task {i}", "status": {"name": "In Progress"},
+        "customfield_456": f"Большая работа {i}" if epic else None,
+        "customfield_789": epic_key, "parent": {"key": parent} if parent else None,
         "customfield_123": sprints, "comment": {"comments": [], "total": 999}},
         "comments": comments if comments is not None else [comment(i * 10)]}
 
@@ -41,6 +43,12 @@ def issue(i, sprints=None, comments=None, summary=None):
 class Server:
     def __init__(self):
         self.issues = [issue(1, [{"id": 1}]), issue(2)]
+        self.context_issues = []
+        self.fields = [{"id": field, "schema": {"custom": "com.pyxis.greenhopper.jira:" + kind}}
+                       for field, kind in (("customfield_123", "gh-sprint"),
+                                           ("customfield_456", "gh-epic-label"),
+                                           ("customfield_789", "gh-epic-link"))]
+        self.fail_path = None
         self.user = "me"
         self.requests = []
         self.page_size = 1
@@ -77,8 +85,8 @@ class Server:
                     self.send_header("Location", fixture.redirect)
                     self.end_headers()
                     return
-                if fixture.status != 200:
-                    self.send_response(fixture.status)
+                if fixture.status != 200 or path == fixture.fail_path:
+                    self.send_response(fixture.status if fixture.status != 200 else 403)
                     self.send_header("Retry-After", fixture.retry_after)
                     self.end_headers()
                     self.wfile.write(b"SECRET RESPONSE BODY")
@@ -86,8 +94,7 @@ class Server:
                 if path == "/rest/api/2/myself":
                     data = {"key": fixture.user, "displayName": "Synthetic User"}
                 elif path == "/rest/api/2/field":
-                    data = [{"id": "customfield_123", "schema": {
-                        "custom": "com.pyxis.greenhopper.jira:gh-sprint"}}]
+                    data = fixture.fields
                 elif path == "/rest/api/2/search":
                     data = self.page(fixture.issues, "issues", params)
                 elif path.startswith("/rest/agile/1.0/sprint/"):
@@ -96,6 +103,13 @@ class Server:
                 elif path.startswith("/rest/api/2/issue/") and path.endswith("/comment"):
                     iid = path.split("/")[-2]
                     data = self.page(next(i for i in fixture.issues if i["id"] == iid)["comments"], "comments", params)
+                elif path.startswith("/rest/api/2/issue/"):
+                    key = path.rsplit("/", 1)[1]
+                    data = next((i for i in fixture.issues + fixture.context_issues if i["key"] == key), None)
+                    if data is None:
+                        self.send_response(404)
+                        self.end_headers()
+                        return
                 else:
                     self.send_response(404)
                     self.end_headers()
@@ -1014,6 +1028,213 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             del self.server.issues[0]["comments"][0]["author"]
             await self.refresh(app, pilot)
             self.assertIn("НЕТ УСПЕШНОЙ", self.status(app))
+            self.assertFalse(list(self.state_dir.glob("*.json")))
+
+    def epic_fixture(self):
+        self.server.issues = [issue(1, [{"id": 1}], epic_key="DEMO-100"),
+                              issue(2, epic_key="DEMO-100"), issue(3),
+                              issue(4, parent="DEMO-300"),
+                              issue(100, [{"id": 1}], epic=True), issue(101, epic=True)]
+        closed_epic = issue(200, epic=True, summary="[bold]Контекстный эпик[/bold]")
+        closed_epic["fields"]["status"]["name"] = "Done"
+        self.server.context_issues = [closed_epic, issue(300, epic_key="DEMO-200"), issue(999)]
+
+    async def test_epic_snapshot_resolves_context_and_subtasks_without_observing_them(self):
+        self.epic_fixture()
+        async with self.running() as (app, pilot):
+            self.assertIsNotNone(app.snapshot)
+            by_key = {i.key: i for i in app.snapshot.issues}
+            self.assertTrue(by_key["DEMO-100"].is_epic)
+            self.assertTrue(by_key["DEMO-101"].tracked)
+            self.assertEqual(by_key["DEMO-4"].epic_key, "DEMO-200")
+            self.assertEqual(by_key["DEMO-200"].status, "Done")
+            self.assertFalse(by_key["DEMO-200"].tracked)
+            self.assertNotIn("DEMO-300", by_key)
+            self.assertNotIn("DEMO-999", by_key)
+            saved = json.loads(next(self.state_dir.glob("*.json")).read_text())
+            self.assertEqual(set(saved["issues"]), {"1", "2", "3", "4", "100", "101"})
+            paths = [path for _, path, _, _ in self.server.requests]
+            self.assertNotIn("/rest/api/2/issue/200/comment", paths)
+            self.assertNotIn("/rest/api/2/issue/300/comment", paths)
+            self.assertTrue(all(method == "GET" for method, *_ in self.server.requests))
+
+    async def test_epic_toggle_groups_across_sprints_preserves_selection_and_has_no_side_effects(self):
+        self.epic_fixture()
+        async with self.running(size=(45, 16)) as (app, pilot):
+            self.assertEqual([r[0] for r in self.rows(app, "sprint")], ["DEMO-1"])
+            self.assertEqual([r[0] for r in self.rows(app, "other")], ["DEMO-2", "DEMO-3", "DEMO-4"])
+            saved = next(self.state_dir.glob("*.json")).read_bytes()
+            requests = len(self.server.requests)
+            await pilot.press("e")
+            await pilot.pause()
+            self.assertTrue(app.query_one("#epic-area").display)
+            self.assertFalse(app.query_one("#sprint-area").display)
+            self.assertFalse(app.query_one("#other-area").display)
+            table = app.query_one("#epic", IssueTable)
+            keys = [r[0].strip().split()[0] for r in self.rows(app, "epic")]
+            self.assertEqual(keys, ["DEMO-100", "DEMO-1", "DEMO-2", "DEMO-101", "DEMO-200", "DEMO-4"])
+            self.assertEqual(table._key_at(table.cursor_row), "1")
+            self.assertIn("(0)", self.rows(app, "epic")[3][1])
+            self.assertIn("[bold]Контекстный эпик[/bold]", str(self.rows(app, "epic")))
+            await pilot.press("down", "e")
+            await pilot.pause()
+            self.assertEqual(app.focused.id, "other")
+            self.assertEqual(app.focused._key_at(app.focused.cursor_row), "2")
+            self.assertEqual(next(self.state_dir.glob("*.json")).read_bytes(), saved)
+            self.assertEqual(len(self.server.requests), requests)
+            await pilot.press("е")
+            await pilot.resize_terminal(110, 32)
+            await pilot.pause()
+            self.assertEqual(app.focused.id, "epic")
+            self.assertGreater(table.size.height, 0)
+        async with self.running() as (app, pilot):
+            self.assertFalse(app.query_one("#epic-area").display)
+            self.assertEqual(app.focused.id, "sprint")
+
+    async def test_epic_open_context_and_own_markers_and_children_order(self):
+        self.epic_fixture()
+        async with self.running() as (app, pilot):
+            self.server.issues.extend([issue(102, epic=True), issue(5, epic_key="DEMO-100")])
+            self.server.issues[0]["comments"].append(comment(19))
+            await self.refresh(app, pilot)
+            await pilot.press("e")
+            await pilot.pause()
+            table = app.query_one("#epic", IssueTable)
+            keys = [r[0].strip() for r in self.rows(app, "epic")]
+            self.assertEqual(keys[:4], ["DEMO-100", "DEMO-5 NEW", "DEMO-1 Comment +1", "DEMO-2"])
+            self.assertIn("DEMO-102 NEW", keys)
+            context_row = next(n for n in range(table.row_count) if table._key_at(n) == "200")
+            before = next(self.state_dir.glob("*.json")).read_bytes()
+            table.move_cursor(row=context_row)
+            await pilot.press("enter")
+            await self.settled(app, pilot)
+            self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-200")
+            self.assertEqual(next(self.state_dir.glob("*.json")).read_bytes(), before)
+            self.assertEqual(self.notice(app), "")
+            own_row = next(n for n in range(table.row_count) if table._key_at(n) == "102")
+            table.move_cursor(row=own_row)
+            await pilot.press("enter")
+            await self.settled(app, pilot)
+            self.assertNotIn("NEW", str(table.get_row_at(own_row)))
+            self.assertEqual(table._key_at(table.cursor_row), "102")
+            # Mouse opens the context epic too, but column headings never open it.
+            await pilot.click("#epic", offset=(4, 1))
+            await self.settled(app, pilot)
+            opened = len(self.opened)
+            table.scroll_to(y=0, animate=False)
+            await pilot.pause()
+            await pilot.click("#epic", offset=(4, context_row + 1))
+            await self.settled(app, pilot)
+            self.assertEqual(len(self.opened), opened + 1)
+            self.assertEqual(self.opened[-1], self.server.url + "/browse/DEMO-200")
+
+    async def test_epic_context_failure_and_bad_relations_keep_the_last_successful_view(self):
+        self.epic_fixture()
+        async with self.running() as (app, pilot):
+            await pilot.press("e")
+            await pilot.pause()
+            before = self.rows(app, "epic")
+            snapshot = app.snapshot
+            saved = next(self.state_dir.glob("*.json")).read_bytes()
+            self.server.fail_path = "/rest/api/2/issue/DEMO-200"
+            await self.refresh(app, pilot)
+            self.assertIs(app.snapshot, snapshot)
+            self.assertEqual(self.rows(app, "epic"), before)
+            self.assertIn("УСТАРЕЛО", self.status(app))
+            self.server.fail_path = None
+            for bad in ("../outside", "DEMO-999", 123):
+                self.server.issues[0]["fields"]["customfield_789"] = bad
+                await self.refresh(app, pilot)
+                self.assertIs(app.snapshot, snapshot)
+                self.assertEqual(next(self.state_dir.glob("*.json")).read_bytes(), saved)
+            self.server.issues[0]["fields"]["customfield_789"] = "DEMO-100"
+            await self.refresh(app, pilot)
+            self.assertNotIn("УСТАРЕЛО", self.status(app))
+
+    async def test_epic_context_open_race_never_clears_a_later_observed_epic(self):
+        self.epic_fixture()
+        async with self.running() as (app, pilot):
+            await pilot.press("e")
+            await pilot.pause()
+            table = app.query_one("#epic", IssueTable)
+            table.move_cursor(row=next(n for n in range(table.row_count) if table._key_at(n) == "200"))
+            self.browser_gate = asyncio.Event()
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertTrue(app.opening)
+            context = self.server.context_issues.pop(0)
+            self.server.issues.append(context)
+            await pilot.press("r")
+            for _ in range(300):
+                await pilot.pause(0.01)
+                if not app.refreshing:
+                    break
+            observed = next(item for item in app.session.view.items if item.issue.id == "200")
+            self.assertTrue(observed.new)
+            self.browser_gate.set()
+            await self.settled(app, pilot)
+            self.assertTrue(next(item for item in app.session.view.items if item.issue.id == "200").new)
+            # A subsequent open captured as observed does clear the marker.
+            await pilot.press("enter")
+            await self.settled(app, pilot)
+            self.assertFalse(next(item for item in app.session.view.items if item.issue.id == "200").new)
+
+    async def test_epic_refresh_regroups_selected_ticket_and_empty_mode_is_navigable(self):
+        async with self.running() as (app, pilot):
+            await pilot.press("e", "down", "ctrl+end", "tab")
+            await pilot.pause()
+            table = app.query_one("#epic", IssueTable)
+            self.assertEqual(table.row_count, 0)
+            self.assertIn("нет эпиков", str(app.query_one("#epic-heading", Static).render()))
+            await pilot.press("enter")
+            self.assertEqual(self.opened, [])
+            self.epic_fixture()
+            await self.refresh(app, pilot)
+            table.move_cursor(row=next(n for n in range(table.row_count) if table._key_at(n) == "2"))
+            self.server.issues[1]["fields"]["customfield_789"] = "DEMO-200"
+            await self.refresh(app, pilot)
+            self.assertEqual(table._key_at(table.cursor_row), "2")
+            preceding_epics = [table._key_at(n) for n in range(table.cursor_row)
+                               if table.shown[table._key_at(n)].is_epic]
+            self.assertEqual(preceding_epics[-1], "200")
+            await pilot.press("ctrl+home")
+            self.assertEqual(table._key_at(table.cursor_row), "100")
+            await pilot.press("ctrl+end")
+            self.assertEqual(table._key_at(table.cursor_row), "2")
+            await pilot.press("pageup", "pagedown", "e", "tab")
+            await pilot.pause()
+            self.assertIn(app.focused.id, ("sprint", "other"))
+
+    async def test_epic_fields_are_discovered_by_schema_and_parents_are_cached(self):
+        self.epic_fixture()
+        self.server.issues.append(issue(5, parent="DEMO-300"))
+        renames = {field["id"]: f"customfield_{index + 900}" for index, field in enumerate(self.server.fields)}
+        for field in self.server.fields:
+            field["id"] = renames[field["id"]]
+            field["name"] = "Локализованное поле"
+        for item in self.server.issues + self.server.context_issues:
+            for old, new in renames.items():
+                item["fields"][new] = item["fields"].pop(old)
+        async with self.running() as (app, pilot):
+            self.assertIsNotNone(app.snapshot)
+            self.assertEqual(next(i for i in app.snapshot.issues if i.id == "5").epic_key, "DEMO-200")
+            paths = [path for _, path, _, _ in self.server.requests]
+            self.assertEqual(paths.count("/rest/api/2/issue/DEMO-300"), 1)
+            self.assertEqual(paths.count("/rest/api/2/issue/DEMO-200"), 1)
+            queries = [p for _, path, p, _ in self.server.requests if path.endswith("/search")]
+            self.assertTrue(all(new in queries[0]["fields"][0] for new in renames.values()))
+
+    async def test_epic_metadata_ambiguity_and_parent_cycles_are_safe_errors(self):
+        self.epic_fixture()
+        self.server.fields.append(self.server.fields[-1])
+        async with self.running() as (app, pilot):
+            self.assertIsNone(app.snapshot)
+            self.assertFalse(list(self.state_dir.glob("*.json")))
+            self.server.fields.pop()
+            self.server.context_issues[1]["fields"]["customfield_789"] = None
+            self.server.context_issues[1]["fields"]["parent"] = {"key": "DEMO-4"}
+            await self.refresh(app, pilot)
+            self.assertIsNone(app.snapshot)
             self.assertFalse(list(self.state_dir.glob("*.json")))
 
 
