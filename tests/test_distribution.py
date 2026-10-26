@@ -33,7 +33,8 @@ class DistributionTests(unittest.TestCase):
                             "Copyright (c) 2021 Tommaso Laurenzi", "Author: morhetz",
                             "Copyright (c) 2016 GitHub Inc.", "Copyright (c) 2011 Ethan Schoonover",
                             "Copyright (c) Konstantin Pschera", "Copyright (c) 2018 Sarah Drasner",
-                            "Copyright (c) 2020 Primer", "Copyright (c) 2021 Catppuccin"):
+                            "Copyright (c) 2020 Primer", "Copyright (c) 2021 Catppuccin",
+                            "Copyright (c) 2022 Tinted Theming"):
             self.assertIn(attribution, content)
         self.assertIn("Permission is hereby granted", content)
 

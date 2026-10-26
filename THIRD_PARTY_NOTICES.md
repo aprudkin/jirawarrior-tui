@@ -48,6 +48,73 @@ lockfile; её транзитивные версии могут отличать
 и настройки курсора заданы этим проектом. Новых runtime-зависимостей нет.
 Настоящий документ с уведомлениями включён в license-файлы wheel/sdist.
 
+### Base16 / Tinted Theming: ещё 30 палитр
+
+Палитры перенесены из [tinted-theming/schemes](https://github.com/tinted-theming/schemes/tree/3662d9d0c4e551101620478229455a72bb016ced/base16),
+commit `3662d9d0c4e551101620478229455a72bb016ced`.
+Это адаптации именно Base16-вариантов, не полные темы соответствующих редакторов.
+Авторы указаны по полям `author` закреплённых YAML. Соответствие ролям UI и
+контрастные оттенки текста описаны в [заметке](docs/research/2026-10-26-thirty-more-themes.md).
+
+| Имя в приложении | Режим | Источник | Автор палитры |
+| --- | --- | --- | --- |
+| `atlas` | Тёмная | [atlas.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/atlas.yaml) | Alex Lende (https://ajlende.com) |
+| `ashes` | Тёмная | [ashes.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/ashes.yaml) | Jannik Siebert (https://github.com/janniks) |
+| `bespin` | Тёмная | [bespin.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/bespin.yaml) | Jan T. Sott |
+| `brewer` | Тёмная | [brewer.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/brewer.yaml) | Timothée Poisot (http://github.com/tpoisot) |
+| `chalk` | Тёмная | [chalk.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/chalk.yaml) | Chris Kempson (http://chriskempson.com) |
+| `darcula` | Тёмная | [darcula.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/darcula.yaml) | jetbrains |
+| `eighties` | Тёмная | [eighties.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/eighties.yaml) | Chris Kempson (http://chriskempson.com) |
+| `embers` | Тёмная | [embers.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/embers.yaml) | Jannik Siebert (https://github.com/janniks) |
+| `espresso` | Тёмная | [espresso.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/espresso.yaml) | Unknown. Maintained by Alex Mirrington (https://github.com/alexmirrington) |
+| `flat` | Тёмная | [flat.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/flat.yaml) | Chris Kempson (http://chriskempson.com) |
+| `github-dark-dimmed` | Тёмная | [github-dark-dimmed.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/github-dark-dimmed.yaml) | Tinted Theming (https://github.com/tinted-theming) |
+| `gruvbox-material-dark-medium` | Тёмная | [gruvbox-material-dark-medium.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/gruvbox-material-dark-medium.yaml) | Mayush Kumar (https://github.com/MayushKumar), sainnhe (https://github.com/sainnhe/gruvbox-material-vscode) |
+| `horizon-dark` | Тёмная | [horizon-dark.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/horizon-dark.yaml) | Michaël Ball (http://github.com/michael-ball/) |
+| `material` | Тёмная | [material.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/material.yaml) | Nate Peterson |
+| `material-darker` | Тёмная | [material-darker.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/material-darker.yaml) | Nate Peterson |
+| `material-palenight` | Тёмная | [material-palenight.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/material-palenight.yaml) | Nate Peterson |
+| `oceanicnext` | Тёмная | [oceanicnext.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/oceanicnext.yaml) | https://github.com/voronianski/oceanic-next-color-scheme |
+| `spaceduck` | Тёмная | [spaceduck.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/spaceduck.yaml) | Guillermo Rodriguez (https://github.com/pineapplegiant), packaged by Gabriel Fontes (https://github.com/Misterio77) |
+| `tomorrow-night` | Тёмная | [tomorrow-night.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/tomorrow-night.yaml) | Chris Kempson (http://chriskempson.com) |
+| `zenburn` | Тёмная | [zenburn.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/zenburn.yaml) | elnawe |
+| `ayu-light` | Светлая | [ayu-light.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/ayu-light.yaml) | Tinted Theming (https://github.com/tinted-theming), Ayu Theme (https://github.com/ayu-theme) |
+| `github-light` | Светлая | [github.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/github.yaml) | Tinted Theming (https://github.com/tinted-theming) |
+| `gruvbox-material-light-medium` | Светлая | [gruvbox-material-light-medium.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/gruvbox-material-light-medium.yaml) | Mayush Kumar (https://github.com/MayushKumar), sainnhe (https://github.com/sainnhe/gruvbox-material-vscode) |
+| `horizon-light` | Светлая | [horizon-light.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/horizon-light.yaml) | Michaël Ball (http://github.com/michael-ball/) |
+| `material-lighter` | Светлая | [material-lighter.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/material-lighter.yaml) | Nate Peterson |
+| `one-light` | Светлая | [one-light.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/one-light.yaml) | Daniel Pfeifer (http://github.com/purpleKarrot) |
+| `papercolor-light` | Светлая | [papercolor-light.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/papercolor-light.yaml) | Jon Leopard (http://github.com/jonleopard), Tinted Theming (https://github.com/tinted-theming), based on PaperColor Theme (https://github.com/NLKNguyen/papercolor-theme) |
+| `selenized-light` | Светлая | [selenized-light.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/selenized-light.yaml) | Jan Warchol (https://github.com/jan-warchol/selenized) / adapted to base16 by ali |
+| `tomorrow` | Светлая | [tomorrow.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/tomorrow.yaml) | Chris Kempson (http://chriskempson.com) |
+| `atelier-sulphurpool-light` | Светлая | [atelier-sulphurpool-light.yaml](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/base16/atelier-sulphurpool-light.yaml) | Bram de Haan (http://atelierbramdehaan.nl) |
+
+Лицензия репозитория источников:
+[MIT](https://github.com/tinted-theming/schemes/blob/3662d9d0c4e551101620478229455a72bb016ced/LICENSE).
+
+```text
+Copyright (c) 2022 Tinted Theming (https://github.com/tinted-theming)
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
 ### One Dark
 
 Источник палитры: <https://github.com/atom/one-dark-syntax/blob/9c96f4454362267ac45322063e193ccf9d2debb1/styles/colors.less>.

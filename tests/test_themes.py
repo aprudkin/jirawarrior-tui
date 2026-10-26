@@ -16,6 +16,7 @@ from textual.widgets import OptionList
 from jira_overview.app import IssueTable, Overview
 from jira_overview.presentation import OverviewPresentation
 from jira_overview.core import Jira
+from jira_overview.themes import ADDITIONAL_THEMES
 from test_overview import Server, TOKEN, comment, issue
 
 
@@ -38,6 +39,40 @@ EXTRA_THEMES = {
     "rose-pine-moon": (True, "#232136", "#e0def4"),
     "kanagawa-dragon": (True, "#181616", "#c5c9c5"),
 }
+
+BASE16_THEMES = {
+    "atlas": (True, "#002635", "#a1a19a"),
+    "ashes": (True, "#1c2023", "#c7ccd1"),
+    "bespin": (True, "#28211c", "#9d9b97"),
+    "brewer": (True, "#0c0d0e", "#b7b8b9"),
+    "chalk": (True, "#151515", "#d0d0d0"),
+    "darcula": (True, "#2b2b2b", "#a9b7c6"),
+    "eighties": (True, "#2d2d2d", "#d3d0c8"),
+    "embers": (True, "#16130f", "#a39a90"),
+    "espresso": (True, "#2d2d2d", "#cccccc"),
+    "flat": (True, "#2c3e50", "#e0e0e0"),
+    "github-dark-dimmed": (True, "#0d1117", "#d1d7e0"),
+    "gruvbox-material-dark-medium": (True, "#292828", "#ddc7a1"),
+    "horizon-dark": (True, "#1c1e26", "#cbced0"),
+    "material": (True, "#263238", "#eeffff"),
+    "material-darker": (True, "#212121", "#eeffff"),
+    "material-palenight": (True, "#292d3e", "#ffffff"),
+    "oceanicnext": (True, "#1b2b34", "#c0c5ce"),
+    "spaceduck": (True, "#16172d", "#ecf0c1"),
+    "tomorrow-night": (True, "#1d1f21", "#c5c8c6"),
+    "zenburn": (True, "#383838", "#dcdccc"),
+    "ayu-light": (False, "#f8f9fa", "#5c6166"),
+    "github-light": (False, "#ffffff", "#454c54"),
+    "gruvbox-material-light-medium": (False, "#fbf1c7", "#654735"),
+    "horizon-light": (False, "#fdf0ed", "#403c3d"),
+    "material-lighter": (False, "#fafafa", "#000000"),
+    "one-light": (False, "#fafafa", "#383a42"),
+    "papercolor-light": (False, "#eeeeee", "#444444"),
+    "selenized-light": (False, "#fbf3db", "#53676d"),
+    "tomorrow": (False, "#ffffff", "#373b41"),
+    "atelier-sulphurpool-light": (False, "#f5f7ff", "#293256"),
+}
+EXTRA_THEMES.update(BASE16_THEMES)
 
 
 def contrast(foreground, background):
@@ -91,7 +126,15 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
     async def select_theme(self, app, pilot, name):
         choices = app.query_one("#theme-list", OptionList)
         names = [option.id for option in choices.options if not option.disabled]
-        await pilot.press("home", *(["down"] * names.index(name)))
+        index = names.index(name)
+        current = names.index(choices.highlighted_option.id)
+        # Keep real keyboard input, taking the shortest path from the current
+        # row or either end; disabled group headings must still be skipped.
+        keys = min((["home"] + ["down"] * index,
+                    ["end"] + ["up"] * (len(names) - 1 - index),
+                    ["down" if index > current else "up"] * abs(index - current)), key=len)
+        if keys:
+            await pilot.press(*keys)
         self.assertEqual(self.highlighted(app), name)
         self.assertEqual(app.theme, name)
 
@@ -99,14 +142,25 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
         async with self.running() as (app, pilot):
             self.assertEqual(app.theme, "textual-dark")
             themes = {name: theme for name, theme in app.available_themes.items() if name != "textual-ansi"}
-            self.assertEqual(len(themes), 27)
-            self.assertEqual(sum(theme.dark for theme in themes.values()), 21)
+            self.assertEqual(len(themes), 57)
+            self.assertEqual(sum(theme.dark for theme in themes.values()), 41)
+            self.assertEqual(sum(not theme.dark for theme in themes.values()), 16)
+            self.assertEqual(len(ADDITIONAL_THEMES), 46)
+            self.assertEqual({theme.name for theme in ADDITIONAL_THEMES}, set(EXTRA_THEMES))
+            self.assertEqual(len(BASE16_THEMES), 30)
+            self.assertEqual(sum(dark for dark, _, _ in BASE16_THEMES.values()), 20)
             for name, (dark, background, foreground) in EXTRA_THEMES.items():
                 with self.subTest(theme=name):
                     theme = themes[name]
                     self.assertEqual(theme.dark, dark)
                     self.assertEqual(theme.background.lower(), background)
                     self.assertEqual(theme.foreground.lower(), foreground)
+                    for role in ("background", "surface", "panel"):
+                        self.assertGreaterEqual(contrast(Color.parse(foreground),
+                                                         Color.parse(getattr(theme, role))), 4.5)
+                        if name in BASE16_THEMES:
+                            self.assertGreaterEqual(contrast(Color.parse(theme.error),
+                                                             Color.parse(getattr(theme, role))), 4.5)
 
     async def test_each_extra_theme_previews_cancels_saves_and_restarts(self):
         for name in EXTRA_THEMES:
@@ -140,6 +194,12 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("enter", "ctrl+shift+a", "0", "enter")
                     # The rendered sidebar wraps this message across lines.
                     self.assertRegex(self.screenshot_text(app), r"до 1440.*минут\.")
+                    if name in BASE16_THEMES:
+                        error = app.query_one("#settings-error")
+                        rendered = Text.assemble(*[(s.text, s.style) for s in error.render_line(0)])
+                        start = next(i for i, char in enumerate(rendered.plain) if not char.isspace())
+                        style = rendered.get_style_at_offset(app.console, start)
+                        self.assertGreaterEqual(contrast(style.color, style.bgcolor), 4.5, name)
                     self.assertFalse((self.state_dir / "settings.json").exists())
                     await pilot.press("escape")
                     self.assertEqual(app.theme, name)
@@ -231,18 +291,18 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
             before_requests = list(self.server.requests)
             original_background = app.screen.styles.background
             await pilot.press("end")
-            self.assertEqual(self.highlighted(app), "textual-light")
-            self.assertEqual(app.theme, "textual-light")
+            self.assertEqual(self.highlighted(app), "tomorrow")
+            self.assertEqual(app.theme, "tomorrow")
             self.assertNotEqual(app.screen.styles.background, original_background)
             await pilot.press("home")
-            self.assertEqual(self.highlighted(app), "ayu-dark")
+            self.assertEqual(self.highlighted(app), "ashes")
             await pilot.press("pagedown", "pageup", "down", "up")
             self.assertEqual(app.theme, self.highlighted(app))
             self.assertFalse(app.query_one("#theme-list", OptionList).highlighted_option.disabled)
             light_count = sum(not theme.dark for name, theme in app.available_themes.items()
                               if name != "textual-ansi")
             await pilot.press("end", *(["up"] * light_count))
-            self.assertEqual(app.theme, "tokyo-night")  # skips the light-group heading
+            self.assertEqual(app.theme, "zenburn")  # skips the light-group heading
             self.assertEqual(self.server.requests, before_requests)
             self.assertEqual(self.history(), before_history)
             self.assertFalse(self.preference.exists())
@@ -271,10 +331,12 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
     async def test_mouse_previews_but_only_enter_commits_and_survives_restart(self):
         async with self.running() as (app, pilot):
             before = self.history()
-            await pilot.press("t", "home")
-            self.assertEqual(app.theme, "ayu-dark")
-            # Click a different visible theme, not the already-highlighted row.
-            await pilot.click("#theme-list", offset=(3, 2))
+            await pilot.press("t")
+            await self.select_theme(app, pilot, "ayu-dark")
+            choices = app.query_one("#theme-list", OptionList)
+            # Account for the header having scrolled out of the viewport.
+            row = choices.get_option_index("ayu-mirage") - int(choices.scroll_y)
+            await pilot.click("#theme-list", offset=(3, row))
             self.assertEqual(app.theme, "ayu-mirage")
             self.assertTrue(app.query_one("#themes").display)
             self.assertFalse(self.preference.exists())
@@ -295,7 +357,9 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
     async def test_background_refresh_preserves_preview_and_selected_issue(self):
         async with self.running() as (app, pilot):
             sprint = app.query_one("#sprint", IssueTable)
-            await pilot.press("t", "end", "e")
+            await pilot.press("t")
+            await self.select_theme(app, pilot, "textual-light")
+            await pilot.press("e")
             self.assertFalse(app.query_one("#presentation", OverviewPresentation).epic_mode)
             # Moving the original task between areas must not steal panel focus.
             self.server.issues[0]["fields"]["customfield_123"] = []
@@ -335,7 +399,8 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
     async def test_save_failure_keeps_panel_and_previous_preference(self):
         self.preference.write_text('{"version":1,"theme":"dracula"}')
         async with self.running() as (app, pilot):
-            await pilot.press("t", "end")
+            await pilot.press("t")
+            await self.select_theme(app, pilot, "textual-light")
             with patch("jira_overview.themes.os.replace", side_effect=PermissionError("private path")):
                 await pilot.press("enter")
                 await pilot.pause()

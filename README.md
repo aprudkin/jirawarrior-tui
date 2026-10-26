@@ -234,13 +234,20 @@ Ctrl+щелчок, как и Enter, подтверждает только пок
 
 `t` открывает справа панель **«Темы»**, сужая обзор без затемнения. При открытии
 выделена текущая тема. В списке сначала **«Тёмные»**, затем **«Светлые»**,
-внутри групп — по алфавиту. Доступны **27 цветовых тем: 21 тёмная и 6 светлых** —
-11 встроенных тем Textual 6.6.0 и 16 дополнительных палитр:
+внутри групп — по алфавиту. Доступны **57 цветовых тем: 41 тёмная и 16 светлых** —
+11 встроенных тем Textual 6.6.0 и 46 дополнительных палитр:
 
 - **Тёмные:** `ayu-dark`, `ayu-mirage`, `catppuccin-frappe`, `catppuccin-macchiato`,
   `everforest-dark`, `github-dark`, `kanagawa-dragon`, `kanagawa-wave`, `night-owl`,
   `one-dark`, `rose-pine`, `rose-pine-moon`, `solarized-dark`.
+- **Ещё 20 тёмных (Base16/Tinted):** `atlas`, `ashes`, `bespin`, `brewer`, `chalk`,
+  `darcula`, `eighties`, `embers`, `espresso`, `flat`, `github-dark-dimmed`,
+  `gruvbox-material-dark-medium`, `horizon-dark`, `material`, `material-darker`,
+  `material-palenight`, `oceanicnext`, `spaceduck`, `tomorrow-night`, `zenburn`.
 - **Светлые:** `rose-pine-dawn`, `everforest-light`, `gruvbox-light`.
+- **Ещё 10 светлых (Base16/Tinted):** `ayu-light`, `github-light`,
+  `gruvbox-material-light-medium`, `horizon-light`, `material-lighter`, `one-light`,
+  `papercolor-light`, `selenized-light`, `tomorrow`, `atelier-sulphurpool-light`.
 
 Everforest использует вариант medium. Новые палитры включены в приложение,
 не требуют дополнительных пакетов, Neovim или смены Python. Прежние темы и
@@ -251,6 +258,7 @@ Everforest использует вариант medium. Новые палитры
 Это источники вдохновения и цветов, не плагины для `jw`: палитры адаптированы
 к ролям интерфейса Textual и уже встроены. Подробности переноса десяти тёмных тем —
 в [заметке об источниках](docs/research/2026-10-26-theme-import.md).
+Источники и адаптация ещё 30 палитр — в [заметке Base16/Tinted](docs/research/2026-10-26-thirty-more-themes.md).
 ANSI-режим, использующий палитру терминала, в этот список не входит.
 Палитра команд полностью отключена: **Ctrl+P больше ничего не открывает**.
 
