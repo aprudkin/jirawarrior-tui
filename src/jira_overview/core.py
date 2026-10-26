@@ -176,7 +176,8 @@ class Jira:
         sprint_field, epic_name_field, epic_link_field = detected
         context_fields = "summary,status,parent," + epic_name_field + "," + epic_link_field
         raw = await self.pages("/rest/api/2/search", "issues", {
-            "jql": "assignee = currentUser() AND resolution = Unresolved ORDER BY key ASC",
+            "jql": 'assignee = currentUser() AND resolution = Unresolved '
+                   'AND status != "Verifying" ORDER BY key ASC',
             "fields": context_fields + "," + sprint_field,
         })
         by_key: dict[str, dict] = {}
@@ -198,6 +199,11 @@ class Jira:
 
         for item in raw:
             cache(item)
+        # Filter only after full pagination; excluded tasks must not load related
+        # data or comments, or enter local observation. Keep them cached in case
+        # a remaining task needs one as its contextual parent/epic.
+        raw = [item for item in raw
+               if required_text(item["fields"]["status"], "name").casefold() != "verifying"]
 
         def is_epic(item):
             # Epic Name is the mandatory, Epic-only locked Jira Software field.
