@@ -8,14 +8,16 @@ import sys
 from typing import Awaitable, Callable
 
 from rich.text import Text
+from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
-from textual.widgets import DataTable, Footer, Static
+from textual.widgets import Button, DataTable, Footer, OptionList, Static
 
-from .core import Issue, Jira
+from .core import Issue, Jira, OverviewError
 from .session import ReviewItem, ReviewSession
+from .themes import ThemePanel, read_theme, write_theme
 
 
 _COLUMN_LABELS = ("Тикет", "Название", "Статус")
@@ -141,8 +143,11 @@ class IssueTable(DataTable):
 
 class Overview(App):
     TITLE = "Jira — мои задачи"
+    ENABLE_COMMAND_PALETTE = False
     CSS = """
     Screen { layout: vertical; }
+    #body { height: 1fr; }
+    #overview { width: 1fr; }
     #connection, #notice { height: auto; max-height: 4; }
     #notice { display: none; }
     #areas { height: 1fr; }
@@ -160,6 +165,8 @@ class Overview(App):
     BINDINGS = [("q", "quit", "Выход"), ("r", "refresh", "Обновить"),
                 ("e", "toggle_epics", "Эпики"),
                 Binding("е", "toggle_epics", show=False),
+                ("t", "toggle_themes", "Темы"),
+                Binding("T", "toggle_themes", show=False),
                 ("tab", "focus_next", "Область"), ("enter", "noop", "Открыть")]
 
     def __init__(self, jira: Jira, state_dir: Path, interval: float = 60,
@@ -168,20 +175,33 @@ class Overview(App):
         self.session = ReviewSession(jira, state_dir, interval, browser, self.session_changed)
         self._painted_items = None
         self.epic_mode = False
+        self._theme_path = state_dir / "theme.json"
+        self._theme_before_preview = None
+        self._theme_return_focus = None
+        self._theme_selected = None
 
     def compose(self) -> ComposeResult:
-        yield Static("Загрузка Jira…", id="connection", markup=False)
-        yield Static("", id="notice", markup=False)
-        with Vertical(id="areas"):
-            for area, title in (("sprint", "Текущий спринт"), ("other", "Остальные мои задачи"),
-                                ("epic", "Эпики")):
-                with Vertical(id=area + "-area", classes="area"):
-                    yield Static(title + " — загрузка…", id=area + "-heading",
-                                 classes="heading", markup=False)
-                    yield IssueTable(id=area)
+        with Horizontal(id="body"):
+            with Vertical(id="overview"):
+                yield Static("Загрузка Jira…", id="connection", markup=False)
+                yield Static("", id="notice", markup=False)
+                with Vertical(id="areas"):
+                    for area, title in (("sprint", "Текущий спринт"), ("other", "Остальные мои задачи"),
+                                        ("epic", "Эпики")):
+                        with Vertical(id=area + "-area", classes="area"):
+                            yield Static(title + " — загрузка…", id=area + "-heading",
+                                         classes="heading", markup=False)
+                            yield IssueTable(id=area)
+            yield ThemePanel(self.available_themes, id="themes")
         yield Footer()
 
     def on_mount(self):
+        try:
+            saved_theme = read_theme(self._theme_path, self.available_themes)
+            if saved_theme is not None:
+                self.theme = saved_theme
+        except OverviewError as error:
+            self.notify(str(error), title="Темы", severity="warning")
         for table in self.query(IssueTable):
             table.add_columns(*_COLUMN_LABELS)
         self.query_one("#sprint", IssueTable).focus()
@@ -227,10 +247,85 @@ class Overview(App):
     def action_noop(self):
         pass
 
+    def check_action(self, action, parameters):
+        if action == "toggle_epics" and self._theme_before_preview is not None:
+            return False
+        return True
+
+    def action_change_theme(self):
+        # Replace Textual's other palette-based entry point as well.
+        self.action_toggle_themes()
+
+    def action_toggle_themes(self):
+        if self._theme_before_preview is not None:
+            self.action_cancel_theme()
+            return
+        self._theme_before_preview = self.theme
+        self._theme_return_focus = self.focused
+        focused = self.focused if isinstance(self.focused, IssueTable) else None
+        self._theme_selected = (focused._key_at(focused.cursor_row)
+                                if focused and focused.row_count else None)
+        for table in self.query(IssueTable):
+            # Keep the overview's real colors visible, but constrain focus and
+            # input to the picker without visually disabling the preview.
+            table.can_focus = False
+        self.query_one("#themes").display = True
+        choices = self.query_one("#theme-list", OptionList)
+        choices.highlighted = choices.get_option_index(self.current_theme.name)
+        choices.focus()
+        self.call_after_refresh(choices.scroll_to_highlight)
+
+    @on(OptionList.OptionHighlighted, "#theme-list")
+    def preview_theme(self, event: OptionList.OptionHighlighted):
+        if self._theme_before_preview is not None and event.option_id is not None:
+            self.theme = event.option_id
+
+    @on(Button.Pressed, "#theme-close")
+    def cancel_theme_button(self):
+        self.action_cancel_theme()
+
+    def action_confirm_theme(self):
+        if self._theme_before_preview is None:
+            return
+        option = self.query_one("#theme-list", OptionList).highlighted_option
+        if option is None or option.id is None:
+            return
+        try:
+            write_theme(self._theme_path, option.id)
+        except OverviewError as error:
+            self.notify(str(error), title="Темы", severity="error")
+            return
+        self.theme = option.id
+        self._close_themes()
+
+    def action_cancel_theme(self):
+        if self._theme_before_preview is not None:
+            self.theme = self._theme_before_preview
+            self._close_themes()
+
+    def _close_themes(self):
+        self.query_one("#themes").display = False
+        self._theme_before_preview = None
+        target = self._theme_return_focus
+        for table in self.query(IssueTable):
+            table.can_focus = True
+            if table.display and table.parent.display and self._theme_selected in table.shown:
+                row = next(row for row in range(table.row_count)
+                           if table._key_at(row) == self._theme_selected)
+                table.move_cursor(row=row)
+                target = table
+        if target is not None:
+            target.focus()
+        self._theme_return_focus = None
+        self._theme_selected = None
+        self.call_after_refresh(self.fit_sprint_area)
+
     def action_refresh(self):
         self.session.refresh()
 
     def action_toggle_epics(self):
+        if self._theme_before_preview is not None:
+            return
         focused = self.focused if isinstance(self.focused, IssueTable) else None
         selected = focused._key_at(focused.cursor_row) if focused and focused.row_count else None
         self.epic_mode = not self.epic_mode
@@ -266,6 +361,8 @@ class Overview(App):
     def paint_snapshot(self, selected=None):
         if not self.session.view.snapshot:
             return
+        if selected is None and self._theme_before_preview is not None:
+            selected = self._theme_selected
         tables = [self.query_one("#epic", IssueTable)] if self.epic_mode else [
             self.query_one("#sprint", IssueTable), self.query_one("#other", IssueTable)]
         focused = self.focused if isinstance(self.focused, IssueTable) else None
@@ -340,6 +437,8 @@ class Overview(App):
                 table.focus()
 
     def on_data_table_row_selected(self, event: IssueTable.RowSelected):
+        if self._theme_before_preview is not None:
+            return
         shown = event.shown
         if shown is not None:
             self.session.open(shown)
