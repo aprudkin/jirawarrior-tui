@@ -14,9 +14,10 @@ from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Footer, Static
 
 from .core import Issue, Jira, plain
-from .session import ReviewSession
+from .session import ReviewItem, ReviewSession
 
 
+_COLUMN_LABELS = ("Тикет", "Название", "Статус")
 _STATUS_PRIORITIES = (
     frozenset(("in progress", "в работе")),
     frozenset(("to do", "к выполнению")),
@@ -35,6 +36,20 @@ def _status_sort_key(status: str) -> tuple[int, str, str]:
 def _item_sort_key(item):
     return (0 if item.new else 1 if item.unread_comments else 2,
             _status_sort_key(item.issue.status), item.issue.key)
+
+
+def _issue_cells(item: ReviewItem, *, epic_count: int | None = None,
+                 indent: bool = False) -> tuple[Text, Text, Text]:
+    issue = item.issue
+    emphasis = "bold" if issue.is_epic or item.new or item.unread_comments else ""
+    key = Text(("  " if indent else "") + issue.key,
+               style="bold cyan" if issue.is_epic else emphasis)
+    if item.new:
+        key.append(" NEW", style="bold green")
+    if item.unread_comments:
+        key.append(f" Comment +{item.unread_comments}", style="bold yellow")
+    summary = issue.summary + (f" ({epic_count})" if epic_count is not None else "")
+    return key, Text(summary, style=emphasis), Text(issue.status)
 
 
 async def open_browser(url: str) -> bool:
@@ -160,7 +175,7 @@ class Overview(App):
 
     def on_mount(self):
         for table in self.query(IssueTable):
-            table.add_columns("Тикет", "Название", "Статус")
+            table.add_columns(*_COLUMN_LABELS)
         self.query_one("#sprint", IssueTable).focus()
         self.run_worker(self.session.start(), group="session", exit_on_error=False)
 
@@ -250,6 +265,15 @@ class Overview(App):
             selected = focused._key_at(focused.cursor_row)
             if selected not in focused.shown:
                 selected = None
+        ordinary_cells = {}
+        column_widths = [Text(label).cell_len for label in _COLUMN_LABELS]
+        if not self.epic_mode:
+            ordinary_cells = {item.issue.id: _issue_cells(item) for item in self.session.view.items
+                              if item.issue.tracked and not item.issue.is_epic}
+            # Both areas share one content grid, measured in terminal cells rather
+            # than code points. Explicit widths also shrink when long rows leave.
+            for cells in ordinary_cells.values():
+                column_widths = [max(width, cell.cell_len) for width, cell in zip(column_widths, cells)]
         for table in tables:
             old_row = table.cursor_row
             old_cursor_key = table._key_at(old_row) if table.row_count else None
@@ -275,7 +299,10 @@ class Overview(App):
                                 and bool(item.issue.sprints) == (table.id == "sprint")),
                                key=_item_sort_key)
             issues = [item.issue for item in items]
-            table.clear()
+            table.clear(columns=not self.epic_mode)
+            if not self.epic_mode:
+                for label, width in zip(_COLUMN_LABELS, column_widths):
+                    table.add_column(label, width=width)
             table.shown = {i.id: i for i in issues}
             names = sorted({name for i in issues for name in i.sprints})
             if table.id == "epic":
@@ -288,15 +315,9 @@ class Overview(App):
             self.query_one(f"#{table.id}-heading", Static).update(heading)
             for item in items:
                 issue = item.issue
-                emphasis = "bold" if issue.is_epic or item.new or item.unread_comments else ""
-                indent = "  " if table.id == "epic" and not issue.is_epic else ""
-                key = Text(indent + issue.key, style="bold cyan" if issue.is_epic else emphasis)
-                if item.new:
-                    key.append(" NEW", style="bold green")
-                if item.unread_comments:
-                    key.append(f" Comment +{item.unread_comments}", style="bold yellow")
-                summary = issue.summary + (f" ({epic_counts[issue.key]})" if issue.is_epic else "")
-                table.add_row(key, Text(summary, style=emphasis), Text(issue.status), key=issue.id)
+                cells = (_issue_cells(item, epic_count=epic_counts.get(issue.key),
+                                      indent=not issue.is_epic) if self.epic_mode else ordinary_cells[issue.id])
+                table.add_row(*cells, key=issue.id)
             row_by_key = {table._key_at(row): row for row in range(table.row_count)
                           if table._key_at(row) in table.shown}
             target = selected if selected in row_by_key else old_key

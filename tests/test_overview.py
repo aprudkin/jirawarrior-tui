@@ -225,6 +225,85 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(style.bold)
                     self.assertEqual(style.color, Color.parse(color))
 
+    def assert_status_columns_aligned(self, app, *, rendered=True):
+        sprint = app.query_one("#sprint", IssueTable)
+        other = app.query_one("#other", IssueTable)
+        self.assertEqual([column.get_render_width(sprint) for column in sprint.ordered_columns],
+                         [column.get_render_width(other) for column in other.ordered_columns])
+        if rendered:
+            positions = []
+            for table in (sprint, other):
+                header = "".join(segment.text for segment in table.render_line(0))
+                self.assertIn("Статус", header)
+                positions.append(table.region.x + Text(header[:header.index("Статус")]).cell_len)
+            self.assertEqual(*positions)
+
+    async def test_status_columns_share_widths_for_content_markers_and_empty_areas(self):
+        self.server.issues[0]["fields"]["summary"] = "Коротко"
+        self.server.issues[1]["key"] = "LONG_PROJECT-200"
+        summary = "Название с широкими 界界 и e\u0301"
+        self.server.issues[1]["fields"]["summary"] = summary
+        self.server.issues[1]["fields"]["status"]["name"] = "Awaiting Verification"
+        async with self.running(size=(180, 36)) as (app, pilot):
+            await pilot.pause()
+            self.assert_status_columns_aligned(app)
+            sprint = app.query_one("#sprint", IssueTable)
+            self.assertEqual(sprint.ordered_columns[1].width, Text(summary).cell_len)
+            initial_width = sprint.virtual_size.width
+            self.server.issues.append(issue(300, [{"id": 1}], summary="Новая"))
+            self.server.issues[0]["comments"].append(comment(19))
+            await self.refresh(app, pilot)
+            self.assert_status_columns_aligned(app)
+            self.assertIn("DEMO-300 NEW", str(self.rows(app, "sprint")))
+            self.assertIn("DEMO-1 Comment +1", str(self.rows(app, "sprint")))
+            await pilot.press("enter")
+            await self.settled(app, pilot)
+            self.assert_status_columns_aligned(app)
+            self.assertEqual(sprint._key_at(sprint.cursor_row), "1")
+            self.server.issues = [self.server.issues[0]]
+            await self.refresh(app, pilot)
+            self.assert_status_columns_aligned(app)
+            self.assertLess(sprint.virtual_size.width, initial_width)
+            self.server.issues[0]["fields"]["customfield_123"] = None
+            await self.refresh(app, pilot)
+            self.assert_status_columns_aligned(app)
+            self.assertEqual(sprint.row_count, 0)
+            self.assertEqual(app.focused.id, "other")
+            self.server.issues = []
+            await self.refresh(app, pilot)
+            self.assert_status_columns_aligned(app)
+            self.assertEqual([column.width for column in sprint.ordered_columns],
+                             [Text(label).cell_len for label in ("Тикет", "Название", "Статус")])
+
+    async def test_status_columns_stay_aligned_on_resize_scroll_and_return_from_epics(self):
+        self.epic_fixture()
+        self.server.issues[1]["fields"]["summary"] = "Synthetic longer summary " * 3
+        # Hidden epic headers must not inflate the ordinary column widths.
+        self.server.issues[-1]["fields"]["summary"] = "Hidden epic " * 50
+        async with self.running(size=(180, 36)) as (app, pilot):
+            for width, height in ((180, 36), (45, 16), (140, 32)):
+                await pilot.resize_terminal(width, height)
+                await pilot.pause()
+                self.assert_status_columns_aligned(app, rendered=width == 180)
+                sprint = app.query_one("#sprint", IssueTable)
+                other = app.query_one("#other", IssueTable)
+                self.assertLess(sprint.virtual_size.width, 150)
+                if width == 45:
+                    self.assertTrue(sprint.show_horizontal_scrollbar)
+                    self.assertTrue(other.show_horizontal_scrollbar)
+                    for table in (sprint, other):
+                        table.scroll_to(x=table.max_scroll_x, animate=False)
+                    await pilot.pause()
+                    self.assert_status_columns_aligned(app)
+                self.assertEqual(app.query_one("#other-heading", Static).region.y - sprint.region.bottom, 1)
+            await pilot.press("e")
+            self.server.issues[1]["fields"]["summary"] = "Ещё одно название после обновления"
+            await self.refresh(app, pilot)
+            await pilot.press("e")
+            await pilot.pause()
+            self.assert_status_columns_aligned(app)
+            self.assertEqual(app.focused.id, "sprint")
+
     async def test_three_columns_without_sprint_in_both_areas(self):
         async with self.running() as (app, pilot):
             for _ in range(2):
