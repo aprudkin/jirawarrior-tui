@@ -25,7 +25,9 @@ class DistributionTests(unittest.TestCase):
 
     def test_palette_licenses_are_included_in_the_distribution(self):
         distribution = metadata.distribution("jirawarrior-tui")
-        notices = [path for path in distribution.files
+        files = distribution.files
+        assert files is not None
+        notices = [path for path in files
                    if str(path).endswith(".dist-info/licenses/THIRD_PARTY_NOTICES.md")]
         self.assertEqual(len(notices), 1)
         content = distribution.locate_file(notices[0]).read_text()

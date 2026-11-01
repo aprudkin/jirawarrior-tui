@@ -34,7 +34,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
         return True
 
     @asynccontextmanager
-    async def running(self, *, size=(110, 32), interval=3600):
+    async def running(self, *, size=(110, 32), interval: float = 3600):
         app = Overview(Jira(self.server.url, TOKEN, allow_local_http=True), self.state_dir,
                        interval=interval, browser=self.browser)
         async with app.run_test(size=size, notifications=True) as pilot:
@@ -86,7 +86,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             table = app.query_one("#other", IssueTable)
             table.focus()
             await pilot.press("s", "enter")
-            self.assertIsInstance(app.focused, Input)
+            assert isinstance(app.focused, Input)
             self.assertEqual(app.focused.value, "60")
             self.assertIn("минутах", str(app.query_one("#interval-label", Static).render()))
             await pilot.press("ctrl+shift+a", "2", "enter")

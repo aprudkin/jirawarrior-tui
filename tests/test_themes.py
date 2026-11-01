@@ -153,6 +153,8 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(theme=name):
                     theme = themes[name]
                     self.assertEqual(theme.dark, dark)
+                    assert theme.background is not None
+                    assert theme.foreground is not None
                     self.assertEqual(theme.background.lower(), background)
                     self.assertEqual(theme.foreground.lower(), foreground)
                     for role in ("background", "surface", "panel"):
@@ -196,7 +198,7 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
                     self.assertRegex(self.screenshot_text(app), r"до 1440.*минут\.")
                     if name in BASE16_THEMES:
                         error = app.query_one("#settings-error")
-                        rendered = Text.assemble(*[(s.text, s.style) for s in error.render_line(0)])
+                        rendered = Text.assemble(*[(s.text, s.style or "") for s in error.render_line(0)])
                         start = next(i for i, char in enumerate(rendered.plain) if not char.isspace())
                         style = rendered.get_style_at_offset(app.console, start)
                         self.assertGreaterEqual(contrast(style.color, style.bgcolor), 4.5, name)
@@ -229,7 +231,7 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
                             table.move_cursor(row=cursor_row)
                             (table if focused else app.query_one("#sprint")).focus()
                             await pilot.pause()
-                            rendered = Text.assemble(*[(s.text, s.style) for s in table.render_line(table.header_height)])
+                            rendered = Text.assemble(*[(s.text, s.style or "") for s in table.render_line(table.header_height)])
                             self.assertIn("DEMO-4 NEW Comment +1", rendered.plain)
                             key_style = rendered.get_style_at_offset(app.console, rendered.plain.index("DEMO-4"))
                             self.assertGreaterEqual(contrast(key_style.color, key_style.bgcolor), 4.5, name)
@@ -242,6 +244,7 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
                                     # Named ANSI marker colours belong to the terminal palette;
                                     # retain their colour/bold/text contract, not a universal
                                     # contrast claim based on Rich's fallback ANSI RGB values.
+                                    assert style.color is not None and style.bgcolor is not None
                                     self.assertNotEqual(style.color.get_truecolor(), style.bgcolor.get_truecolor())
                             if focused and cursor_row == 0:
                                 self.assertEqual(key_style.bgcolor, table.get_component_rich_style("datatable--cursor").bgcolor)
@@ -298,7 +301,9 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.highlighted(app), "ashes")
             await pilot.press("pagedown", "pageup", "down", "up")
             self.assertEqual(app.theme, self.highlighted(app))
-            self.assertFalse(app.query_one("#theme-list", OptionList).highlighted_option.disabled)
+            highlighted = app.query_one("#theme-list", OptionList).highlighted_option
+            assert highlighted is not None
+            self.assertFalse(highlighted.disabled)
             light_count = sum(not theme.dark for name, theme in app.available_themes.items()
                               if name != "textual-ansi")
             await pilot.press("end", *(["up"] * light_count))

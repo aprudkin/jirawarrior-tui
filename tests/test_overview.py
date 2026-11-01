@@ -51,13 +51,13 @@ class Server:
         self.sprint_names = {}
         self.sprint_states = {}
         # Writes are opt-in for sprint-action tests; ordinary overview remains GET-only.
-        self.sprint_post_status = None
+        self.sprint_post_status: int | None = None
         self.sprint_post_fail_refresh = False
         self.fields = [{"id": field, "schema": {"custom": "com.pyxis.greenhopper.jira:" + kind}}
                        for field, kind in (("customfield_123", "gh-sprint"),
                                            ("customfield_456", "gh-epic-label"),
                                            ("customfield_789", "gh-epic-link"))]
-        self.fail_path = None
+        self.fail_path: str | None = None
         self.user = "me"
         self.display_name = "Synthetic User"
         self.requests = []
@@ -68,16 +68,16 @@ class Server:
         self.duplicate = False
         self.total_delta = 0
         self.bad_start = False
-        self.delay = 0
+        self.delay: float = 0
         self.request_gate = False
         self.request_started = threading.Event()
         self.request_release = threading.Event()
-        self.redirect = None
+        self.redirect: str | None = None
         self.retry_after = "1"
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *args):
+            def log_message(self, format: str, *args: object) -> None:
                 pass
 
             def do_GET(self):
@@ -197,12 +197,12 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.browser_gate.wait()
         return self.browser_ok
 
-    def make_app(self, interval=3600):
+    def make_app(self, interval: float = 3600):
         return Overview(Jira(self.server.url, TOKEN, allow_local_http=True), self.state_dir,
                         interval=interval, browser=self.browser)
 
     @asynccontextmanager
-    async def running(self, *, size=(110, 32), interval=3600):
+    async def running(self, *, size=(110, 32), interval: float = 3600):
         app = self.make_app(interval)
         async with app.run_test(size=size) as pilot:
             await self.settled(app, pilot)
@@ -295,7 +295,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await self.refresh(app, pilot)
             self.assert_status_columns_aligned(app)
             self.assertEqual(sprint.row_count, 0)
-            self.assertEqual(app.focused.id, "other")
+            self.assertIs(app.focused, app.query_one("#other", IssueTable))
             self.server.issues = []
             await self.refresh(app, pilot)
             self.assert_status_columns_aligned(app)
@@ -329,7 +329,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("e")
             await pilot.pause()
             self.assert_status_columns_aligned(app)
-            self.assertEqual(app.focused.id, "sprint")
+            self.assertIs(app.focused, app.query_one("#sprint", IssueTable))
 
     async def test_four_columns_without_sprint_in_both_areas(self):
         async with self.running() as (app, pilot):
@@ -400,7 +400,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                     if not focused:
                         await pilot.press("tab")
                     self.assertEqual(table.has_focus, focused)
-                    rendered = Text.assemble(*[(segment.text, segment.style) for segment in
+                    rendered = Text.assemble(*[(segment.text, segment.style or "") for segment in
                                               table.render_line(table.header_height + table.cursor_row)])
                     self.assertIn("DEMO-4 NEW Comment +1", rendered.plain)
                     for label, color in (("NEW", "green"), ("Comment +1", "yellow")):
@@ -469,7 +469,9 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(number=number):
                 self.assertEqual(by_id[str(number)].updated, expected)
                 if expected is not None:
-                    self.assertIs(by_id[str(number)].updated.tzinfo, timezone.utc)
+                    updated = by_id[str(number)].updated
+                    assert updated is not None
+                    self.assertIs(updated.tzinfo, instant.tzinfo)
         self.assertIsNone(by_id["99"].updated)
         self.assertEqual(by_id["1000"].updated, instant)
         related = [params for _, path, params, _ in self.server.requests
@@ -966,7 +968,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                     before = sprint.scroll_y
                     await pilot.press("tab", "ctrl+end")
                     await pilot.pause()
-                    self.assertEqual(app.focused.id, "other")
+                    self.assertIs(app.focused, app.query_one("#other", IssueTable))
                     self.assertGreater(other.scroll_y, 0)
                     self.assertEqual(sprint.scroll_y, before)
                     self.assertEqual(self.opened, [])
@@ -998,7 +1000,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                                  "verifying", "Awaiting Verification"]):
             item["fields"]["status"]["name"] = status
         async with self.running() as (app, pilot):
-            self.assertIsNotNone(app.snapshot)
+            assert app.snapshot is not None
             self.assertEqual([i.id for i in app.snapshot.issues], ["1", "2", "6"])
             self.assertEqual([r[0] for r in self.rows(app, "sprint")], ["DEMO-1"])
             self.assertEqual([r[0] for r in self.rows(app, "other")], ["DEMO-2", "DEMO-6"])
@@ -1026,12 +1028,14 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                 item["fields"]["status"]["name"] = "Verifying"
             self.server.issues[0]["comments"].append(comment(19))
             await self.refresh(app, pilot)
+            assert app.snapshot is not None
             self.assertEqual(app.snapshot.issues, ())
             self.assertEqual(self.rows(app, "sprint"), [])
             self.assertEqual(self.rows(app, "other"), [])
             self.assertNotIn("УСТАРЕЛО", self.status(app))
             self.assertEqual(state_path.read_bytes(), before)
         async with self.running() as (app, pilot):
+            assert app.snapshot is not None
             self.assertEqual(app.snapshot.issues, ())
             for item in self.server.issues:
                 item["fields"]["status"]["name"] = "In Progress"
@@ -1045,6 +1049,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             if item["id"] in {"2", "100", "101"}:
                 item["fields"]["status"]["name"] = "Verifying"
         async with self.running() as (app, pilot):
+            assert app.snapshot is not None
             by_key = {i.key: i for i in app.snapshot.issues}
             self.assertNotIn("DEMO-2", by_key)
             self.assertNotIn("DEMO-101", by_key)
@@ -1066,8 +1071,9 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                        browser=self.browser)
         async with app.run_test(size=(160, 32)) as pilot:
             await self.settled(app, pilot)
-            self.assertIsNotNone(app.snapshot)
+            assert app.snapshot is not None
             schedule = app.session.view.next_refresh_at
+            assert schedule is not None
             scheduled = datetime.strptime(schedule.rsplit(" ", 1)[0], "%H:%M:%S")
             now = datetime.now().astimezone()
             seconds = ((scheduled.hour - now.hour) * 3600 +
@@ -1086,6 +1092,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.status(app),
                              f"Jira Warrior: Synthetic User | Обновлено {app.session.view.updated_at}"
                              f" | Следующее обновление {app.session.view.next_refresh_at}")
+            assert app.snapshot is not None
             self.assertEqual(app.snapshot.user_id, "key:me")
             await pilot.press("e")
             self.assertTrue(self.status(app).startswith("Jira Warrior: Synthetic User | "))
@@ -1106,6 +1113,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("e")
             self.assertEqual(self.status(app), prefix + f"Обновлено {app.session.view.updated_at}"
                              f" | Следующее обновление {app.session.view.next_refresh_at}")
+            assert app.snapshot is not None
             self.assertEqual(app.snapshot.user_id, "key:me")
             self.assertEqual(self.opened, [])
 
@@ -1175,7 +1183,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                 self.server.request_gate = False
                 self.server.request_release.set()
             await self.settled(app, pilot)
-            self.assertIsNotNone(app.snapshot)
+            assert app.snapshot is not None
             self.assertIn("Обновлено", self.status(app))
             self.assertIn(f"Следующее обновление {app.session.view.next_refresh_at}", self.status(app))
             self.assertNotIn("Updating", self.status(app))
@@ -1185,6 +1193,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
         async with self.running(size=(45, 16)) as (app, pilot):
             heading = app.query_one("#sprint-heading", Static)
             self.assertEqual(str(heading.render()), "Текущий спринт (1) — 43-я неделя")
+            assert app.snapshot is not None
             self.assertEqual(app.snapshot.issues[0].sprints, ("DEMO-2026-W43 (#1)",))
             await pilot.pause()
             self.assertEqual(heading.size.height, 1)
@@ -1194,6 +1203,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.rows(app, "sprint"), [
                 ["DEMO-1", "Synthetic task 1", "In Progress", "—"],
             ])
+            assert isinstance(app.focused, IssueTable)
             self.assertEqual(app.focused._key_at(app.focused.cursor_row), "1")
             self.assertEqual(self.opened, [])
 
@@ -1235,7 +1245,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(self.rows(app, "other")), 2)
             self.assertTrue(all(len(row) == 4 for row in self.rows(app, "other")))
             self.assertNotIn("NEW", self.visible(app))
-            self.assertEqual(app.focused.id, "other")
+            self.assertIs(app.focused, app.query_one("#other", IssueTable))
             await pilot.press("enter")
             await self.settled(app, pilot)
             self.assertEqual(self.opened, [self.server.url + "/browse/DEMO-1"])
@@ -1250,11 +1260,11 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.server.issues[1]["fields"]["customfield_123"] = [{"id": 1}]
             await self.refresh(app, pilot)
             table = app.query_one("#sprint", IssueTable)
-            self.assertEqual(app.focused.id, "sprint")
+            self.assertIs(app.focused, app.query_one("#sprint", IssueTable))
             self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, "DEMO-2")
             self.server.issues.pop(1)
             await self.refresh(app, pilot)
-            self.assertEqual(app.focused.id, "sprint")
+            self.assertIs(app.focused, app.query_one("#sprint", IssueTable))
             self.assertEqual(table.get_row_at(table.cursor_row)[0].plain, "DEMO-1")
             self.assertTrue(table.get_row_at(table.cursor_row)[2])
 
@@ -1330,9 +1340,11 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
                 table = app.query_one("#" + area, IssueTable)
                 row = next(n for n in range(table.row_count) if table._key_at(n) == iid)
                 saved = profile.read_bytes()
-                for modifiers in ({}, {"times": 2}, {"shift": True}, {"meta": True}):
+                for times, shift, meta in ((1, False, False), (2, False, False),
+                                           (1, True, False), (1, False, True)):
                     table.move_cursor(row=table.row_count - 1)
-                    await pilot.click("#" + area, offset=(5, table.header_height + row), **modifiers)
+                    await pilot.click("#" + area, offset=(5, table.header_height + row),
+                                      times=times, shift=shift, meta=meta)
                     await self.settled(app, pilot)
                     self.assertIs(app.focused, table)
                     self.assertEqual(table._key_at(table.cursor_row), iid)
@@ -1397,14 +1409,14 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
     async def test_delayed_row_event_opens_issue_captured_before_repaint(self):
         entered, release = asyncio.Event(), asyncio.Event()
         class DelayedOverview(Overview):
-            async def on_issue_activated(inner, event):
-                if not hasattr(inner, "captured"):
-                    inner.captured = event
+            def on_issue_activated(self, event):
+                if not hasattr(self, "captured"):
+                    self.captured = event
                     entered.set()
-                    asyncio.create_task(inner.open_captured(event))
-            async def open_captured(inner, event):
+                    asyncio.create_task(self.open_captured(event))
+            async def open_captured(self, event):
                 await release.wait()
-                super(DelayedOverview, inner).on_issue_activated(event)
+                super().on_issue_activated(event)
         app = DelayedOverview(Jira(self.server.url, TOKEN, allow_local_http=True), self.state_dir,
                               interval=3600, browser=self.browser)
         async with app.run_test() as pilot:
@@ -1575,6 +1587,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_instance_isolation_and_large_retry_after(self):
         async with self.running() as (app, pilot):
+            assert app.snapshot is not None
             other = State(self.state_dir, "https://other.example.org", app.snapshot.user_id)
             try:
                 self.assertFalse(other.data["baseline"])
@@ -1674,6 +1687,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(other._key_at(other.cursor_row), "123456")
             self.assertEqual([row[0] for row in self.rows(app, "other")],
                              ["DEMO-10", "├─ DEMO-123456", "└─ DEMO-2"])
+            assert app.snapshot is not None
             self.assertEqual(len({item.id for item in app.snapshot.issues if item.tracked}), 4)
             self.assertIn("(2)", str(app.query_one("#other-heading", Static).render()))
             self.assertFalse(self.opened)
@@ -1791,7 +1805,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
     async def test_epic_snapshot_resolves_context_and_subtasks_without_observing_them(self):
         self.epic_fixture()
         async with self.running() as (app, pilot):
-            self.assertIsNotNone(app.snapshot)
+            assert app.snapshot is not None
             by_key = {i.key: i for i in app.snapshot.issues}
             self.assertTrue(by_key["DEMO-100"].is_epic)
             self.assertTrue(by_key["DEMO-101"].tracked)
@@ -1842,18 +1856,19 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("[bold]Контекстный эпик[/bold]", str(self.rows(app, "epic")))
             await pilot.press("down", "e")
             await pilot.pause()
-            self.assertEqual(app.focused.id, "other")
+            self.assertIs(app.focused, app.query_one("#other", IssueTable))
+            assert isinstance(app.focused, IssueTable)
             self.assertEqual(app.focused._key_at(app.focused.cursor_row), "2")
             self.assertEqual(next(self.state_dir.glob("*.json")).read_bytes(), saved)
             self.assertEqual(len(self.server.requests), requests)
             await pilot.press("е")
             await pilot.resize_terminal(110, 32)
             await pilot.pause()
-            self.assertEqual(app.focused.id, "epic")
+            self.assertIs(app.focused, app.query_one("#epic", IssueTable))
             self.assertGreater(table.size.height, 0)
         async with self.running() as (app, pilot):
             self.assertFalse(app.query_one("#epic-area").display)
-            self.assertEqual(app.focused.id, "sprint")
+            self.assertIs(app.focused, app.query_one("#sprint", IssueTable))
 
     async def test_epic_open_context_and_own_markers_and_children_order(self):
         self.epic_fixture()
@@ -1977,7 +1992,8 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(table._key_at(table.cursor_row - 1), "300")
             await pilot.press("pageup", "pagedown", "e", "tab")
             await pilot.pause()
-            self.assertIn(app.focused.id, ("sprint", "other"))
+            self.assertIn(app.focused, (app.query_one("#sprint", IssueTable),
+                                        app.query_one("#other", IssueTable)))
 
     async def test_epic_fields_are_discovered_by_schema_and_parents_are_cached(self):
         self.epic_fixture()
@@ -1990,7 +2006,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             for old, new in renames.items():
                 item["fields"][new] = item["fields"].pop(old)
         async with self.running() as (app, pilot):
-            self.assertIsNotNone(app.snapshot)
+            assert app.snapshot is not None
             self.assertEqual(next(i for i in app.snapshot.issues if i.id == "5").epic_key, "DEMO-200")
             paths = [path for _, path, _, _ in self.server.requests]
             self.assertEqual(paths.count("/rest/api/2/issue/DEMO-300"), 1)

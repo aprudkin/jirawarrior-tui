@@ -33,7 +33,7 @@ class ConflictRecoveryTests(unittest.IsolatedAsyncioTestCase):
         return True
 
     @asynccontextmanager
-    async def running(self, *, interval=3600):
+    async def running(self, *, interval: float = 3600):
         app = Overview(Jira(self.server.url, TOKEN, allow_local_http=True), self.state_dir,
                        interval=interval, browser=self.browser)
         async with app.run_test(size=(110, 32)) as pilot:
@@ -74,8 +74,9 @@ class ConflictRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 files = {p.name: p.read_bytes() for p in self.state_dir.iterdir()}
                 for cancel in ("enter", "escape"):
                     await self.find(app, pilot)
+                    assert isinstance(app.screen, OwnerConfirmation)
                     self.assertEqual(app.screen.owner.pid, process.pid)
-                    self.assertEqual(app.focused.id, "cancel-owner")
+                    self.assertIs(app.focused, app.screen.query_one("#cancel-owner", Button))
                     self.assertIn(str(process.pid), str(app.screen.query_one("#owner-question", Static).render()))
                     with patch("jira_overview.processes.os.kill") as kill:
                         await pilot.press(cancel)
@@ -110,7 +111,7 @@ class ConflictRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     async with self.running() as (app, pilot):
                         await self.find(app, pilot)
                         await pilot.press(key)
-                        self.assertEqual(app.focused.id, "stop-owner")
+                        self.assertIs(app.focused, app.screen.query_one("#stop-owner", Button))
                         await pilot.press("enter")
                         await self.wait_for(pilot, lambda: app.snapshot is not None and not app.refreshing)
                         await asyncio.wait_for(process.wait(), 3)
@@ -121,6 +122,7 @@ class ConflictRecoveryTests(unittest.IsolatedAsyncioTestCase):
         async with locked_process(self.root, self.state_dir, self.server.url) as process:
             async with self.running(interval=0.3) as (app, pilot):
                 await self.find(app, pilot)
+                assert isinstance(app.screen, OwnerConfirmation)
                 owner = app.screen.owner
                 requests = len(self.server.requests)
                 schedule = app.session.view.next_refresh_at
@@ -149,6 +151,7 @@ class ConflictRecoveryTests(unittest.IsolatedAsyncioTestCase):
         async with locked_process(self.root, self.state_dir, self.server.url) as process:
             async with self.running() as (app, pilot):
                 await self.find(app, pilot)
+                assert isinstance(app.screen, OwnerConfirmation)
                 stale = replace(app.screen.owner, started="different process")
                 with patch("jira_overview.processes.find_lock_owner", AsyncMock(return_value=stale)), \
                         patch("jira_overview.processes.os.kill") as kill:
@@ -156,6 +159,7 @@ class ConflictRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     await self.wait_for(pilot, lambda: not app.session.view.recovery_busy)
                     kill.assert_not_called()
                 self.assertTrue(app.session.view.profile_busy)
+                assert app.session.view.recovery_notice is not None
                 self.assertIn("изменился", app.session.view.recovery_notice)
                 self.assertIsNone(process.returncode)
                 self.assertFalse(list(self.state_dir.glob("*.json")))
@@ -202,9 +206,11 @@ class ConflictRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_final_animation_during_screen_teardown_does_not_query_removed_widgets(self):
         finished = asyncio.Event()
         class FinalAnimation(Static):
-            async def on_unmount(widget):
+            async def on_unmount(self):
                 await asyncio.sleep(0.01)
-                widget.app.animate_refresh()
+                app = self.app
+                assert isinstance(app, Overview)
+                app.animate_refresh()
                 finished.set()
         try:
             async with self.running() as (app, pilot):

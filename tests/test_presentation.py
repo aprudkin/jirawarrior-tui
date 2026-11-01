@@ -7,7 +7,8 @@ import unittest
 from unittest.mock import patch
 
 from textual.app import App, ComposeResult
-from textual.widgets import Static
+from textual.widgets import DataTable, Static
+from textual.widgets.data_table import RowKey
 
 from jira_overview.core import Issue
 from jira_overview.presentation import IssueActivated, IssueTable, OverviewPresentation
@@ -28,6 +29,8 @@ def review_item(number: int, *, status="In Progress", sprint=False, new=False,
 
 
 class PresentationHarness(App):
+    activated: Issue
+
     CSS = "Screen { layout: vertical; }"
 
     def compose(self) -> ComposeResult:
@@ -36,7 +39,7 @@ class PresentationHarness(App):
 
     def on_mount(self):
         self.query_one("#sidebar", Static).can_focus = True
-        self.activation_gate = None
+        self.activation_gate: asyncio.Event | None = None
 
     async def on_issue_activated(self, event: IssueActivated):
         if self.activation_gate is not None:
@@ -45,6 +48,27 @@ class PresentationHarness(App):
 
 
 class PresentationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_row_selection_reports_acceptance_and_rejects_unshown_or_suspended_rows(self):
+        app = PresentationHarness()
+        async with app.run_test() as pilot:
+            presentation = app.query_one(OverviewPresentation)
+            first, second = review_item(1), review_item(2)
+            presentation.present((first, second))
+            table = app.query_one("#other", IssueTable)
+            for key in (RowKey(), RowKey("missing")):
+                self.assertIs(table.post_message(DataTable.RowSelected(table, 0, key)), False)
+            await pilot.pause()
+            self.assertFalse(hasattr(app, "activated"))
+
+            self.assertIs(table.post_message(DataTable.RowSelected(table, 0, RowKey("1"))), True)
+            await pilot.pause()
+            self.assertIs(app.activated, first.issue)
+
+            presentation.suspend_navigation()
+            self.assertIs(table.post_message(DataTable.RowSelected(table, 1, RowKey("2"))), False)
+            await pilot.pause()
+            self.assertIs(app.activated, first.issue)
+
     async def test_empty_success_is_distinct_from_loading_and_renders_grouped_areas(self):
         async with PresentationHarness().run_test() as pilot:
             app = pilot.app
@@ -119,12 +143,15 @@ class PresentationTests(unittest.IsolatedAsyncioTestCase):
             app.query_one("#sidebar", Static).focus()
             presentation.resume_navigation()
             await pilot.pause()
-            selected = app.focused.get_row_at(app.focused.cursor_row)[0].plain.split()[0]
+            focused = app.focused
+            assert isinstance(focused, IssueTable)
+            selected = focused.get_row_at(focused.cursor_row)[0].plain.split()[0]
             self.assertEqual(selected, "DEMO-3")
 
     async def test_activation_captures_exact_shown_issue_before_later_repaint(self):
         async with PresentationHarness().run_test() as pilot:
             app = pilot.app
+            assert isinstance(app, PresentationHarness)
             presentation = app.query_one(OverviewPresentation)
             original = review_item(1, summary="Shown version")
             presentation.present((original,))
@@ -244,6 +271,7 @@ class PresentationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             presentation.present((*items, review_item(30)))
             self.assertIs(app.focused, other)
+            assert presentation.selected_issue is not None
             self.assertTrue(presentation.selected_issue.tracked)
             presentation.suspend_navigation()
             app.query_one("#sidebar", Static).focus()
@@ -251,12 +279,14 @@ class PresentationTests(unittest.IsolatedAsyncioTestCase):
             presentation.resume_navigation()
             await pilot.pause()
             self.assertIs(app.focused, other)
+            assert presentation.selected_issue is not None
             self.assertTrue(presentation.selected_issue.tracked)
             sprint.focus()
             sprint.move_cursor(row=0)
             await pilot.pause()
             presentation.present(items)
             self.assertIs(app.focused, sprint)
+            assert presentation.selected_issue is not None
             self.assertFalse(presentation.selected_issue.tracked)
             presentation.toggle_epics()
             epic = app.query_one("#epic", IssueTable)
@@ -266,6 +296,7 @@ class PresentationTests(unittest.IsolatedAsyncioTestCase):
             ])
             self.assertEqual(epic.get_row_at(0)[1].plain, "Task 100 (4)")
             await pilot.pause()
+            assert presentation.selected_issue is not None
             self.assertTrue(presentation.selected_issue.tracked)
             presentation.toggle_epics()
             await pilot.pause()
@@ -307,6 +338,7 @@ class PresentationTests(unittest.IsolatedAsyncioTestCase):
             from textual.widgets import Input
 
             app = pilot.app
+            assert isinstance(app, PresentationHarness)
             presentation = app.query_one(OverviewPresentation)
             items = (
                 review_item(100, epic=True, tracked=False),

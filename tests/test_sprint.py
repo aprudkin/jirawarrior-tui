@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from textual.widgets import Input, OptionList
+from textual.widgets import Button, Input, OptionList
 
 from jira_overview.app import Overview
 from jira_overview.core import Jira, Sprint
@@ -54,6 +54,7 @@ class SprintTests(unittest.IsolatedAsyncioTestCase):
         session = self.session()
         await session.start()
         await self.wait_until(lambda: not session.view.refreshing)
+        assert session.view.snapshot is not None
         self.assertEqual(session.view.snapshot.active_sprints, (Sprint("1", "Sprint 1"),))
         self.server.issues.append(issue(4))
         session.refresh()
@@ -70,6 +71,7 @@ class SprintTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(added.issue.sprints, ("Sprint 1 (#1)",))
         self.assertTrue(added.new)
         self.assertEqual(added.unread_comments, 1)
+        assert session.view.sprint_notice is not None
         self.assertIn("подтверждено", session.view.sprint_notice)
         self.assertEqual(self.posts[0][2], {"issues": ["4"]})
         self.assertEqual(self.opened, [])
@@ -103,17 +105,18 @@ class SprintTests(unittest.IsolatedAsyncioTestCase):
             await self.wait_until(lambda: app.snapshot is not None)
             await pilot.pause()
             await pilot.press("tab")
-            self.assertEqual(app.focused.id, "other")
+            self.assertIs(app.focused, app.query_one("#other", IssueTable))
             await pilot.press("a")
             await self.wait_until(lambda: bool(self.posts) and not app.session.view.sprint_busy)
             await pilot.pause()
-            self.assertEqual(app.focused.id, "sprint")
+            self.assertIs(app.focused, app.query_one("#sprint", IssueTable))
             table = app.query_one("#sprint", IssueTable)
             self.assertEqual(table.shown[table._key_at(table.cursor_row)].id, "2")
             self.assertEqual(self.posts[0][2], {"issues": ["2"]})
             await pilot.press("a")
             await self.wait_until(lambda: not app.session.view.sprint_busy)
             self.assertEqual(len(self.posts), 1)
+            assert app.session.view.sprint_notice is not None
             self.assertIn("уже", app.session.view.sprint_notice)
             self.assertEqual(self.opened, [])
 
@@ -124,7 +127,7 @@ class SprintTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(80, 24)) as pilot:
             await self.wait_until(lambda: app.snapshot is not None)
             await pilot.press("/", "U", "n", "i", "q", "u", "e", "enter")
-            self.assertEqual(app.focused.id, "other")
+            self.assertIs(app.focused, app.query_one("#other", IssueTable))
             await pilot.press("a")
             await pilot.pause()
             choices = app.screen.query_one("#sprint-choices", OptionList)
@@ -132,7 +135,7 @@ class SprintTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.posts, [])
             await pilot.press("escape")
             await pilot.pause()
-            self.assertEqual(app.focused.id, "other")
+            self.assertIs(app.focused, app.query_one("#other", IssueTable))
             self.assertEqual(self.posts, [])
             await pilot.press("a")
             await pilot.pause()
@@ -154,13 +157,16 @@ class SprintTests(unittest.IsolatedAsyncioTestCase):
         self.server.sprint_post_status = 403
         session.add_to_sprint(shown)
         await self.wait_until(lambda: not session.view.sprint_busy)
+        assert session.view.sprint_notice is not None
         self.assertIn("403", session.view.sprint_notice)
         self.assertIs(session.view.snapshot, before)
         self.server.sprint_post_status = 204
         self.server.sprint_post_fail_refresh = True
         session.add_to_sprint(shown)
         await self.wait_until(lambda: not session.view.sprint_busy)
+        assert session.view.sprint_notice is not None
         self.assertIn("подтверждено", session.view.sprint_notice)
+        assert session.view.refresh_error is not None
         self.assertIn("403", session.view.refresh_error)
         self.assertIs(session.view.snapshot, before)
         self.assertEqual(len(self.posts), 2)
@@ -200,6 +206,7 @@ class SprintTests(unittest.IsolatedAsyncioTestCase):
             await self.wait_until(lambda: app.snapshot is not None)
             app.query_one("#other", IssueTable).focus()
             await pilot.press("a")
+            assert app.session.view.sprint_notice is not None
             self.assertIn("нет активных", app.session.view.sprint_notice)
             self.assertEqual(self.posts, [])
 
@@ -211,6 +218,7 @@ class SprintTests(unittest.IsolatedAsyncioTestCase):
             await self.wait_until(lambda: app.snapshot is not None)
             await pilot.press("e", "a")
             self.assertEqual(self.posts, [])
+            assert app.session.view.sprint_notice is not None
             self.assertIn("Эпики и подзадачи", app.session.view.sprint_notice)
             await pilot.press("down", "a")
             await self.wait_until(lambda: bool(self.posts) and not app.session.view.sprint_busy)
@@ -219,6 +227,7 @@ class SprintTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(table.shown[table._key_at(table.cursor_row)].id, "2")
             await pilot.press("down", "a")
             self.assertEqual(len(self.posts), 1)
+            assert app.session.view.sprint_notice is not None
             self.assertIn("Эпики и подзадачи", app.session.view.sprint_notice)
             self.assertEqual(self.opened, [])
 
@@ -243,12 +252,12 @@ class SprintTests(unittest.IsolatedAsyncioTestCase):
             app.query_one("#other", IssueTable).focus()
             await pilot.press("a")
             await pilot.pause()
-            self.assertEqual(app.focused.id, "cancel-sprint")
+            self.assertIs(app.focused, app.screen.query_one("#cancel-sprint", Button))
             await pilot.press("enter")
             await pilot.pause()
             self.assertFalse(app.session.view.sprint_choices)
             self.assertEqual(self.posts, [])
-            self.assertEqual(app.focused.id, "other")
+            self.assertIs(app.focused, app.query_one("#other", IssueTable))
 
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
             await self.browser_gate.wait()
         return True
 
-    def make_session(self, changed=None, interval=3600):
+    def make_session(self, changed=None, interval: float = 3600):
         return ReviewSession(Jira(self.server.url, TOKEN, allow_local_http=True),
                              Path(self.temp.name), interval, self.browser, changed)
 
@@ -58,8 +58,8 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(3598 < self.seconds_until(session.view.next_refresh_at) <= 3600)
         schedule = session.view.next_refresh_at
         for invalid in (4, 86401, True, float("nan"), "120"):
-            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
-                session.set_interval(invalid)
+            with self.subTest(invalid=invalid):
+                self.assertRaises(ValueError, session.set_interval, invalid)
         self.assertEqual(session.interval, 3600)
         self.assertEqual(session.view.next_refresh_at, schedule)
 
@@ -111,6 +111,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         session.refresh()
         await self.wait_until(lambda: not session.view.refreshing)
         self.assertEqual(session.view.next_refresh_at, scheduled)
+        assert session.view.refresh_error is not None
         self.assertIn("HTTP 503", session.view.refresh_error)
         session.open(session.view.items[0].issue)
         await self.wait_until(lambda: not session.view.opening)
@@ -144,6 +145,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_until(lambda: not session.view.refreshing)
         self.assertIsNone(session.view.snapshot)
         self.assertEqual(session.view.items, ())
+        assert session.view.refresh_error is not None
         self.assertIn("HTTP 500", session.view.refresh_error)
         self.assertFalse(list(Path(self.temp.name).glob("*.json")))
         self.server.status = 200
@@ -276,8 +278,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.issue.key for item in view.items], ["DEMO-1", "DEMO-2"])
         self.assertFalse(any(item.new or item.unread_comments for item in view.items))
         self.assertIsNone(view.refresh_error)
-        with self.assertRaises((AttributeError, TypeError)):
-            view.items[0].new = True
+        self.assertRaises((AttributeError, TypeError), setattr, view.items[0], "new", True)
         await session.aclose()
         self.assertTrue(session.view.closed)
 
@@ -295,6 +296,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
         session.refresh()
         await self.wait_until(lambda: not session.view.refreshing)
+        assert session.view.snapshot is not None
         self.assertEqual(session.view.snapshot.issues[0].comments, frozenset({"10", "99"}))
         self.assertEqual(len([r for r in self.server.requests if r[1].endswith("/myself")]), 2)
         shown = baseline.items[0].issue
@@ -342,10 +344,12 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
             await session.start()
             await self.wait_until(lambda: not session.view.refreshing)
             self.assertIsNone(session.view.snapshot)
+            assert session.view.refresh_error is not None
             self.assertIn("НЕ сохранены", session.view.refresh_error)
             self.server.user = "changed-account"
             session.refresh()
             await self.wait_until(lambda: not session.view.refreshing)
+            assert session.view.refresh_error is not None
             self.assertIn("Учётная запись изменилась", session.view.refresh_error)
             self.assertFalse(list(Path(self.temp.name).glob("*.json")))
         await session.aclose()
@@ -367,6 +371,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.view.updated_at, previous_view.updated_at)
         self.assertEqual(session.view.items, previous_view.items)
         self.assertEqual(state_path.read_bytes(), previous_state)
+        assert session.view.refresh_error is not None
         self.assertIn("НЕ сохранены", session.view.refresh_error)
         await session.aclose()
 
@@ -386,6 +391,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
             await self.wait_until(lambda: not session.view.opening)
         self.assertEqual(path.read_bytes(), previous)
         self.assertEqual(session.view.items[0].unread_comments, 1)
+        assert session.view.open_notice is not None
         self.assertIn("НЕ сохранены", session.view.open_notice)
         await session.aclose()
 
@@ -423,16 +429,17 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         session.refresh()
         await self.wait_until(lambda: not session.view.refreshing)
         self.assertEqual(len(self.server.requests), requests)
+        assert session.view.refresh_error is not None
         self.assertIn("429", session.view.refresh_error)
         await session.aclose()
 
     async def test_close_cancels_browser_wait_before_releasing_profile(self):
         entered, cancelled = asyncio.Event(), asyncio.Event()
 
-        async def waiting_browser(url):
+        async def waiting_browser(url) -> bool:
             entered.set()
             try:
-                await asyncio.Event().wait()
+                return await asyncio.Event().wait()
             finally:
                 cancelled.set()
 
@@ -452,13 +459,13 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(cancelled.is_set())
         replacement = Jira(self.server.url, TOKEN, allow_local_http=True)
         from jira_overview.core import State
+        assert session.view.user_id is not None
         state = State(Path(self.temp.name), self.server.url, session.view.user_id)
         state.close()
         await replacement.close()
 
     async def test_close_cancels_gated_refresh_without_late_state_write(self):
         notifications = []
-        session = None
         session = self.make_session(lambda: notifications.append(session.view))
         await session.start()
         await self.wait_until(lambda: session.view.snapshot is not None)
@@ -479,10 +486,10 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancelled_close_waiter_and_concurrent_close_keep_profile_until_cleanup(self):
         entered, cleanup_gate, cleanup_finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
-        async def delayed_cleanup_browser(url):
+        async def delayed_cleanup_browser(url) -> bool:
             entered.set()
             try:
-                await asyncio.Event().wait()
+                return await asyncio.Event().wait()
             finally:
                 await cleanup_gate.wait()
                 cleanup_finished.set()
@@ -498,6 +505,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         first.cancel()
         await asyncio.sleep(0)
         from jira_overview.core import State
+        assert session.view.user_id is not None
         with self.assertRaises(Exception):
             State(Path(self.temp.name), self.server.url, session.view.user_id)
         cleanup_gate.set()
@@ -505,6 +513,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await first
         self.assertTrue(cleanup_finished.is_set())
+        assert session.view.user_id is not None
         replacement = State(Path(self.temp.name), self.server.url, session.view.user_id)
         replacement.close()
 
@@ -526,11 +535,13 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         occupied = self.make_session()
         await occupied.start()
         await self.wait_until(lambda: occupied.view.refresh_error is not None)
+        assert occupied.view.refresh_error is not None
         self.assertIn("Другой экземпляр", occupied.view.refresh_error)
         await occupied.aclose()
         self.server.user = "different"
         first.refresh()
         await self.wait_until(lambda: not first.view.refreshing)
+        assert first.view.refresh_error is not None
         self.assertIn("Учётная запись изменилась", first.view.refresh_error)
         state_path = first_state_file
         state_path.write_text("synthetic corruption")
@@ -539,6 +550,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         corrupted = self.make_session()
         await corrupted.start()
         await self.wait_until(lambda: corrupted.view.refresh_error is not None)
+        assert corrupted.view.refresh_error is not None
         self.assertIn("повреждено", corrupted.view.refresh_error)
         self.assertEqual(state_path.read_text(), "synthetic corruption")
         await corrupted.aclose()
@@ -571,6 +583,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
             await session.aclose()
         jira.close.assert_awaited_once()
         close_state.assert_called_once()
+        assert session.view.user_id is not None
         replacement = State(Path(self.temp.name), self.server.url, session.view.user_id)
         replacement.close()
 
@@ -588,6 +601,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(asyncio.Event().wait(), timeout=0.01)
             except TimeoutError:
                 return False
+            return True
         session = ReviewSession(Jira(self.server.url, TOKEN, allow_local_http=True),
                                 Path(self.temp.name), 3600, browser_timeout)
         await session.start()
@@ -601,6 +615,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         session.open(shown)
         await self.wait_until(lambda: not session.view.opening)
         self.assertTrue(next(item for item in session.view.items if item.issue.id == "5").new)
+        assert session.view.open_notice is not None
         self.assertIn("Браузер не принял", session.view.open_notice)
         await session.aclose()
 
@@ -619,6 +634,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         session.open(issue4)
         await self.wait_until(lambda: not session.view.opening)
         self.assertTrue(session.view.items[-1].new)
+        assert session.view.open_notice is not None
         self.assertIn("не принял", session.view.open_notice)
         await session.aclose()
         after_close = len(notifications)
@@ -659,6 +675,7 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(session.view.snapshot, old.snapshot)
         self.assertEqual(session.view.updated_at, old.updated_at)
         self.assertEqual(state_path.read_bytes(), previous_state)
+        assert session.view.refresh_error is not None
         self.assertIn("HTTP 503", session.view.refresh_error)
         session.open(old.items[0].issue)
         await self.wait_until(lambda: not session.view.opening)
@@ -673,6 +690,8 @@ class StartupCleanupTests(unittest.TestCase):
     def test_failed_application_run_still_closes_unstarted_session(self):
         from jira_overview.__main__ import run_overview
         class FailedApp:
+            session: ReviewSession
+
             def run(self):
                 raise RuntimeError("synthetic compose/mount failure")
         failed = FailedApp()
@@ -683,6 +702,8 @@ class StartupCleanupTests(unittest.TestCase):
         self.assertTrue(failed.session.view.closed)
 
         class PartiallyStartedApp:
+            session: ReviewSession
+
             def run(self):
                 asyncio.run(self.session.start())
                 raise RuntimeError("synthetic failure after mount start")
@@ -694,6 +715,8 @@ class StartupCleanupTests(unittest.TestCase):
         self.assertTrue(partial.session.view.closed)
 
         class NormallyClosedApp:
+            session: ReviewSession
+
             def run(self):
                 asyncio.run(self.session.aclose())
         normal = NormallyClosedApp()

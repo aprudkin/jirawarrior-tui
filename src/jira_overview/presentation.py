@@ -119,15 +119,16 @@ class IssueActivated(Message):
 class IssueTable(DataTable):
     """Table navigation; its containing presentation owns shown issues."""
 
-    def post_message(self, message):
+    def post_message(self, message: Message) -> bool:
         if isinstance(message, DataTable.RowSelected):
-            shown = self.shown.get(message.row_key.value)
+            key = message.row_key.value
+            shown = self.shown.get(key) if key is not None else None
             presentation = next((ancestor for ancestor in self.ancestors
                                 if isinstance(ancestor, OverviewPresentation)), None)
             if (shown is not None and presentation is not None
                     and not presentation.navigation_suspended):
-                self.post_message(IssueActivated(shown))
-            return None
+                return self.post_message(IssueActivated(shown))
+            return False
         return super().post_message(message)
 
     def __init__(self, **kwargs):
@@ -136,7 +137,7 @@ class IssueTable(DataTable):
                          cursor_foreground_priority="renderable", **kwargs)
         self.shown: dict[str, Issue] = {}
 
-    def _on_click(self, event: events.Click) -> None:
+    async def _on_click(self, event: events.Click) -> None:
         # Selection is not activation: only Ctrl+left-click opens an issue.
         event.stop()
         event.prevent_default()
@@ -157,7 +158,9 @@ class IssueTable(DataTable):
             self.call_after_refresh(presentation.fit_sprint_area)
 
     def _key_at(self, row: int) -> str:
-        return self.coordinate_to_cell_key(Coordinate(row, 0)).row_key.value
+        key = self.coordinate_to_cell_key(Coordinate(row, 0)).row_key.value
+        assert key is not None  # Presentation rows always have an explicit issue ID.
+        return key
 
     def _issue_rows(self) -> list[int]:
         return [row for row in range(self.row_count) if self._key_at(row) in self.shown]

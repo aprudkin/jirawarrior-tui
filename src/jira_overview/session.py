@@ -233,6 +233,7 @@ class ReviewSession:
     async def _timer(self) -> None:
         try:
             while True:
+                assert self._next_tick is not None
                 self._timer_changed.clear()
                 try:
                     await asyncio.wait_for(self._timer_changed.wait(),

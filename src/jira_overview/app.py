@@ -489,7 +489,9 @@ class Overview(App):
             status = Text("Загрузка Jira…")
         if view.refreshing:
             status.append(" | ")
-            status.append_text(self._refresh_spinner.render(time.monotonic()))
+            frame = self._refresh_spinner.render(time.monotonic())
+            assert isinstance(frame, Text)
+            status.append_text(frame)
         elif view.next_refresh_at is not None:
             status.append(f" | Следующее обновление {view.next_refresh_at}")
         self.query_one("#connection", Static).update(status)

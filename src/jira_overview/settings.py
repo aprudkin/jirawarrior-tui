@@ -3,17 +3,17 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import tempfile
+from contextlib import suppress
+from pathlib import Path
 
 from .core import OverviewError
-
 
 DEFAULT_REFRESH_SECONDS = 3600
 
 
 def validate_refresh_seconds(value: object) -> int | float:
-    if type(value) not in (int, float) or not 5 <= value <= 86400:
+    if not (type(value) is int or type(value) is float) or not 5 <= value <= 86400:
         raise ValueError("Интервал должен быть числом от 5 до 86400 секунд.")
     return value
 
@@ -47,7 +47,5 @@ def write_refresh_seconds(path: Path, value: int | float) -> None:
         raise OverviewError("Не удалось сохранить интервал. Прежняя настройка сохранена; повторите или отмените ввод.") from None
     finally:
         if temporary is not None:
-            try:
+            with suppress(OSError):
                 os.unlink(temporary)
-            except OSError:
-                pass

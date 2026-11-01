@@ -57,6 +57,7 @@ class TaskLaunchers(unittest.TestCase):
         }
 
     def run_task(self, *arguments):
+        assert TASK is not None
         return subprocess.run(
             [TASK, "--global", *arguments], cwd=self.caller, env=self.env,
             text=True, capture_output=True, timeout=15,
@@ -74,6 +75,7 @@ class TaskLaunchers(unittest.TestCase):
         master, slave = pty.openpty()
         self.addCleanup(os.close, master)
         self.addCleanup(os.close, slave)
+        assert TASK is not None
         result = subprocess.run(
             [TASK, "--global", "jira"], cwd=self.caller, env=self.env,
             stdin=slave, stdout=slave, stderr=slave, timeout=15,

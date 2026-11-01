@@ -60,7 +60,7 @@ async def _command(*arguments: str) -> tuple[int, str]:
             *arguments, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"})
         output, _ = await asyncio.wait_for(process.communicate(), timeout=3)
-        return process.returncode, output.decode("utf-8", errors="replace")
+        return await process.wait(), output.decode("utf-8", errors="replace")
     except (OSError, TimeoutError):
         raise OverviewError("Поиск процесса недоступен; закройте другой экземпляр вручную и нажмите R.") from None
     finally:

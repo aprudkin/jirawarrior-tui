@@ -38,6 +38,7 @@ finally:
         "ignore" if ignore_interrupt else "interrupt",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
     try:
+        assert process.stdout is not None
         ready = await asyncio.wait_for(process.stdout.readline(), 5)
         if ready != b"READY\n":
             raise AssertionError("Synthetic lock-owning child failed to start")
@@ -79,6 +80,7 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
             lock = next(self.state_dir.glob("*.lock"))
             before = lock.read_bytes(), lock.stat().st_ino
             owner = await find_lock_owner(lock)
+            assert owner is not None
             self.assertEqual(owner.pid, process.pid)
             self.assertEqual(owner.uid, os.getuid())
             self.assertEqual(before, (lock.read_bytes(), lock.stat().st_ino))
@@ -96,6 +98,7 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
             free = self.state_dir / "different.lock"
             free.touch()
             owner = await find_lock_owner(next(p for p in self.state_dir.glob("*.lock") if p != free))
+            assert owner is not None
             with patch("jira_overview.processes.os.kill") as kill:
                 self.assertIsNone(await find_lock_owner(free))
                 self.assertIsNone(await find_lock_owner(self.state_dir / "missing.lock"))
@@ -121,6 +124,7 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
         async with locked_process(self.root, self.state_dir) as process:
             lock = next(self.state_dir.glob("*.lock"))
             owner = await find_lock_owner(lock)
+            assert owner is not None
             for stale in (replace(owner, started="a previous process"),
                           replace(owner, inode=owner.inode + 1), replace(owner, pid=os.getpid())):
                 with self.subTest(stale=stale), patch("jira_overview.processes.os.kill") as kill:
@@ -154,6 +158,7 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
         async with locked_process(self.root, self.state_dir, ignore_interrupt=True) as process:
             lock = next(self.state_dir.glob("*.lock"))
             owner = await find_lock_owner(lock)
+            assert owner is not None
             with patch("jira_overview.processes.os.kill", wraps=os.kill) as kill:
                 with self.assertRaises(OverviewError):
                     await stop_lock_owner(lock, owner)
