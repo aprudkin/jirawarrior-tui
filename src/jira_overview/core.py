@@ -105,7 +105,13 @@ class Snapshot:
 
 class Jira:
     def __init__(self, url: str, token: str, *, allow_local_http: bool = False):
-        parts = urlsplit(url)
+        try:
+            parts = urlsplit(url)
+            # urlsplit defers port validation until this property is accessed.
+            _ = parts.port
+            httpx.URL(url)
+        except (ValueError, httpx.InvalidURL):
+            raise OverviewError("Некорректный URL Jira; проверьте адрес конфигурации.") from None
         if (parts.scheme != "https" and not (
             allow_local_http and parts.scheme == "http" and parts.hostname in ("127.0.0.1", "localhost")
         )) or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
@@ -140,6 +146,8 @@ class Jira:
             raise RateLimited(self.retry_at - time.monotonic())
         try:
             response = await self.client.get(self.url + path, params=params)
+        except httpx.InvalidURL:
+            raise OverviewError("Некорректный URL Jira; проверьте адрес конфигурации.") from None
         except httpx.HTTPError:
             raise OverviewError("Сетевая ошибка или ошибка TLS; повторите обновление.") from None
         code = response.status_code
@@ -213,8 +221,7 @@ class Jira:
         sprint_field, epic_name_field, epic_link_field = await self._software_fields()
         context_fields = "summary,status,parent,updated," + epic_name_field + "," + epic_link_field
         raw = await self.pages("/rest/api/2/search", "issues", {
-            "jql": 'assignee = currentUser() AND resolution = Unresolved '
-                   'AND status != "Verifying" ORDER BY key ASC',
+            "jql": 'assignee = currentUser() AND resolution = Unresolved ORDER BY key ASC',
             "fields": context_fields + "," + sprint_field,
         })
         by_key: dict[str, dict] = {}

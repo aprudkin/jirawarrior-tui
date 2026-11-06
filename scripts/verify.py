@@ -13,7 +13,7 @@ from pathlib import Path
 from check_attempt import candidate, environment, git, load, run
 
 ROOT = Path(__file__).resolve().parents[1]
-FAST_TESTS = ("configuration", "sprint")
+FAST_TESTS = ("configuration", "sprint", "sprint_api")
 
 
 def profiles():

@@ -3,6 +3,9 @@ from datetime import datetime
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+
+import httpx
 
 from jira_overview.core import Jira
 from jira_overview.session import ReviewSession
@@ -137,6 +140,24 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_until(lambda: not session.view.refreshing)
         self.assertEqual(session.view.next_refresh_at, scheduled)
         self.assertEqual(len(self.server.requests), requests)
+
+    async def test_invalid_url_during_background_refresh_is_reported_and_recovers(self):
+        session = self.make_session()
+        self.addAsyncCleanup(session.aclose)
+        with patch.object(session._jira.client, "get", side_effect=httpx.InvalidURL("private-url synthetic-token")):
+            await session.start()
+            await self.wait_until(lambda: not session.view.refreshing)
+        self.assertIsNone(session.view.snapshot)
+        self.assertIsNotNone(session.view.refresh_error)
+        self.assertIn("URL Jira", session.view.refresh_error or "")
+        self.assertNotIn("private-url", session.view.refresh_error or "")
+        self.assertNotIn("synthetic-token", session.view.refresh_error or "")
+        self.assertEqual(self.server.requests, [])
+        self.assertFalse(list(Path(self.temp.name).glob("*.json")))
+        session.refresh()
+        await self.wait_until(lambda: not session.view.refreshing)
+        self.assertIsNotNone(session.view.snapshot)
+        self.assertIsNone(session.view.refresh_error)
 
     async def test_failed_initial_load_is_not_an_empty_success_and_recovers(self):
         self.server.status = 500

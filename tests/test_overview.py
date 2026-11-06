@@ -48,6 +48,7 @@ class Server:
     def __init__(self):
         self.issues = [issue(1, [{"id": 1}]), issue(2)]
         self.context_issues = []
+        self.reject_unknown_verifying = False
         self.sprint_names = {}
         self.sprint_states = {}
         # Writes are opt-in for sprint-action tests; ordinary overview remains GET-only.
@@ -106,6 +107,11 @@ class Server:
                 elif path == "/rest/api/2/field":
                     data = fixture.fields
                 elif path == "/rest/api/2/search":
+                    if fixture.reject_unknown_verifying and "verifying" in params.get("jql", [""])[0].casefold():
+                        self.send_response(400)
+                        self.end_headers()
+                        self.wfile.write(b"Unknown status Verifying")
+                        return
                     data = self.page(fixture.issues, "issues", params)
                 elif path.startswith("/rest/agile/1.0/sprint/"):
                     sid = int(path.rsplit("/", 1)[1])
@@ -991,6 +997,14 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             for sensitive in (TOKEN, BODY, "Synthetic task", "Synthetic User", self.server.url):
                 self.assertNotIn(sensitive, saved)
 
+    async def test_overview_loads_when_instance_has_no_verifying_status(self):
+        self.server.reject_unknown_verifying = True
+        async with self.running() as (app, pilot):
+            self.assertIsNotNone(app.snapshot)
+            self.assertEqual([row[0] for row in self.rows(app, "sprint")], ["DEMO-1"])
+            self.assertEqual([row[0] for row in self.rows(app, "other")], ["DEMO-2"])
+            self.assertNotIn("УСТАРЕЛО", self.status(app))
+
     async def test_verifying_is_excluded_after_full_pagination_before_related_data_and_state(self):
         self.server.issues = [issue(1, [{"id": 1}]), issue(2),
                               issue(3, [{"id": 999}], epic_key="DEMO-999"),
@@ -1006,7 +1020,7 @@ class OverviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([r[0] for r in self.rows(app, "other")], ["DEMO-2", "DEMO-6"])
             searches = [p for _, path, p, _ in self.server.requests if path.endswith("/search")]
             self.assertEqual([p["startAt"] for p in searches], [[str(i)] for i in range(6)])
-            self.assertTrue(all('status != "Verifying"' in p["jql"][0] for p in searches))
+            self.assertTrue(all("verifying" not in p["jql"][0].casefold() for p in searches))
             paths = [path for _, path, _, _ in self.server.requests]
             for iid in (3, 4, 5):
                 self.assertNotIn(f"/rest/api/2/issue/{iid}/comment", paths)

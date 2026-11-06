@@ -54,8 +54,15 @@ python3 scripts/update_uv_tool.py "$target_sha" "$previous_sha"
 
 Скрипт откажется менять установку, если исходный commit нельзя подтвердить.
 Сначала он ставит кандидата в отдельные временные uv tool/bin каталоги, сравнивает
-его provenance с целевым SHA и проверяет `--help` и синтетическую GET-only
-`--check` обеих команд вне checkout. Только затем обновляет установленный tool.
+его provenance с целевым SHA и вне checkout проверяет `--help` и ожидаемый
+безопасный отказ `--check` без токена у обеих команд (missing-token smoke).
+Дополнительно Python staged-установки в изолированном режиме (`-I`) запускает
+успешную синтетическую `--check`: настоящий `snapshot()` загружает задачу,
+спринт и комментарии через HTTPX MockTransport, без сети, реального PAT,
+браузера и записи baseline/меток. Проверяется импорт установленного кандидата,
+а не исходников checkout; кандидат с падающим `snapshot()` отклоняется.
+Только после этих проверок обновляется установленный tool. Это синтетический
+preflight, **не живая приёмка Jira**.
 Если команда uv завершилась ошибкой, скрипт сначала читает provenance изменённой
 среды: неизвестный commit не перезаписывается; известный предыдущий SHA сохраняется
 либо кандидат восстанавливается из прежнего точного SHA, после чего повторно
@@ -629,7 +636,8 @@ PYTHONDONTWRITEBYTECODE=1 uv run --frozen python scripts/verify.py profile prese
 PYTHONDONTWRITEBYTECODE=1 uv run --frozen python scripts/verify.py full
 ```
 
-`fast` запускает быстрые синтетические тестовые модули; `profile NAME` запускает один модуль
+`fast` запускает синтетические модули `configuration`, `sprint` и `sprint_api`,
+включая защиту от переноса между активными/будущими спринтами; `profile NAME` запускает один модуль
 из `tests/test_*.py` (например, `presentation` или `processes`); `full` запускает исходный
 полный unittest discovery. Runner передаёт ненулевой код при сбое. Он не обращается к Jira,
 моделям или браузеру. `full` требует macOS, `lsof`, `ps` и Go Task до запуска: отсутствие prerequisite —

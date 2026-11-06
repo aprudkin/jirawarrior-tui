@@ -23,7 +23,7 @@ class VerificationEntrypointTests(unittest.TestCase):
         for name in ("pre-commit", "pre-push"):
             shutil.copy2(ROOT / ".githooks" / name, self.root / ".githooks" / name)
         (self.root / ".gitignore").write_text("__pycache__/\n.venv/\n")
-        for name in ("configuration", "sprint", "profile_control"):
+        for name in ("configuration", "sprint", "sprint_api", "profile_control"):
             (self.root / "tests" / f"test_{name}.py").write_text(
                 "import unittest\nclass Control(unittest.TestCase):\n def test_control(self): self.assertTrue(True)\n")
         self.env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
@@ -66,6 +66,15 @@ class VerificationEntrypointTests(unittest.TestCase):
         masked = self.git("commit", "-qm", "must reject unstaged fix")
         self.assertNotEqual(masked.returncode, 0)
         self.assertIn("Unstaged", masked.stdout + masked.stderr)
+
+    def test_fast_rejects_a_failure_in_sprint_api(self):
+        (self.root / "tests/test_sprint_api.py").write_text(
+            "import unittest\nclass Control(unittest.TestCase):\n def test_guard(self): self.fail('sprint API guard')\n")
+        result = self.run_verify("fast")
+        self.assertNotEqual(result.returncode, 0)
+        receipt = json.loads(result.stdout)
+        self.assertEqual(receipt["outcome"], "FAIL")
+        self.assertIn("sprint API guard", (Path(receipt["directory"]) / "stderr").read_text())
 
     def test_install_preserves_foreign_hook_configuration(self):
         self.git("config", "core.hooksPath", "foreign-hooks")

@@ -3,6 +3,8 @@
 import json
 import os
 import subprocess
+import sys
+import sysconfig
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,7 +49,7 @@ class ToolUpdateTests(unittest.TestCase):
         uv = self.root / "bin/uv"
         uv.parent.mkdir()
         uv.write_text("""#!/usr/bin/env python3
-import json, os, pathlib, sys
+import json, os, pathlib, shutil, subprocess, sys
 args = sys.argv[1:]
 with open(os.environ["UV_LOG"], "a") as f: f.write(json.dumps(args) + "\\n")
 if args[:2] == ["tool", "dir"]:
@@ -69,11 +71,23 @@ if args[:2] == ["tool", "install"]:
         metadata = tools / "jirawarrior-tui/lib/python3.12/site-packages/jirawarrior_tui-0.2.0.dist-info"
         metadata.mkdir(parents=True, exist_ok=True)
         (metadata / "direct_url.json").write_text(json.dumps({"url": "https://github.com/aprudkin/jirawarrior-tui.git", "vcs_info": {"vcs": "git", "commit_id": sha}}))
+        candidate = tools / "jirawarrior-tui"
+        subprocess.run([os.environ["TEST_PYTHON"], "-m", "venv", "--without-pip", str(candidate)], check=True)
+        python = candidate / "bin/python"
+        site = pathlib.Path(subprocess.check_output([str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"], text=True).strip())
+        (site / "test-dependencies.pth").write_text(os.environ["TEST_SITE"])
+        package = site / "jira_overview"
+        shutil.copytree(os.environ["TEST_SOURCE"], package, ignore=shutil.ignore_patterns("__pycache__"))
+        if os.environ.get("FAIL_SNAPSHOT"):
+            with (package / "core.py").open("a") as f:
+                f.write("\\nasync def broken_snapshot(self):\\n    raise RuntimeError('synthetic broken staged snapshot')\\nJira.snapshot = broken_snapshot\\n")
         for name in ("jirawarrior", "jw"):
             p = target / name
             p.write_text("#!/usr/bin/env python3\\nimport json, os, sys\\nprint(json.dumps([os.getcwd(), sys.argv[1:]]), file=open(os.environ['COMMAND_CWDS'], 'a'))\\nif '--check' in sys.argv: print('Переменная окружения с токеном отсутствует', file=sys.stderr); raise SystemExit(1)\\nprint('usage: " + name + " [options]')\\n")
             p.chmod(0o755)
         raise SystemExit()
+    if os.environ.get("FAIL_RECOVERY") and sha == os.environ["OLD_SHA"]:
+        raise SystemExit(29)
     state = pathlib.Path(os.environ["STATE"])
     tool_dir = pathlib.Path(os.environ["UV_TOOL_DIR"])
     if "--tool-dir" in args:
@@ -110,6 +124,9 @@ raise SystemExit(99)
                 "UV_CACHE_DIR": str(self.root / "cache"),
                 "STATE": str(self.state),
                 "OLD_SHA": OLD,
+                "TEST_PYTHON": sys.executable,
+                "TEST_SITE": sysconfig.get_path("purelib"),
+                "TEST_SOURCE": str(ROOT / "src/jira_overview"),
                 "PYTHONDONTWRITEBYTECODE": "1",
             }
         )
@@ -147,6 +164,28 @@ raise SystemExit(99)
                 ).returncode,
                 0,
             )
+
+    def test_broken_staged_snapshot_is_rejected_before_promotion(self):
+        result = self.run_update(NEW, OLD, FAIL_SNAPSHOT="1", cwd=ROOT)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("staged synthetic snapshot --check failed", result.stderr)
+        self.assertEqual(json.loads(self.state.read_text()), {"sha": OLD, "usable": True})
+        invocations = [json.loads(line) for line in self.uv_log.read_text().splitlines()]
+        self.assertFalse(any("--force" in call for call in invocations))
+
+    def test_snapshot_check_ignores_pythonpath_checkout_override(self):
+        poison = self.root / "poison/jira_overview"
+        poison.mkdir(parents=True)
+        (poison / "__init__.py").write_text("raise RuntimeError('imported checkout override')\n")
+        result = self.run_update(NEW, OLD, PYTHONPATH=str(poison.parent), cwd=ROOT)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Staged synthetic snapshot --check passed", result.stdout)
+
+    def test_failed_recovery_never_reports_a_confirmed_update(self):
+        result = self.run_update(NEW, OLD, PARTIAL_PROMOTION="1", FAIL_RECOVERY="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("recovery did not confirm PREVIOUS_SHA", result.stderr)
+        self.assertNotIn("Installed and verified", result.stdout)
 
     def test_foreign_provenance_is_not_overwritten(self):
         metadata = (
@@ -240,6 +279,9 @@ raise SystemExit(99)
     def test_success_checks_both_staged_commands_then_promotes_exact_sha(self):
         result = self.run_update(NEW, OLD)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("missing-token --check smoke", result.stdout)
+        self.assertIn("staged synthetic snapshot --check passed", result.stdout)
+        self.assertIn("not live Jira acceptance", result.stdout)
         self.assertEqual(
             json.loads(self.state.read_text()), {"sha": NEW, "usable": True}
         )

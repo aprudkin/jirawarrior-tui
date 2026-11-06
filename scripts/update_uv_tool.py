@@ -79,8 +79,20 @@ def check_commands(bin_dir):
                 or "Переменная окружения с токеном" not in regression.stderr
             ):
                 raise UpdateError(
-                    f"installed synthetic --check regression failed: {command}"
+                    f"installed missing-token --check smoke failed: {command}"
                 )
+
+
+def check_snapshot(tool_dir):
+    with tempfile.TemporaryDirectory(prefix="jirawarrior-candidate-check-") as temporary:
+        result = run(
+            [str(tool_dir / PACKAGE / "bin/python"), "-I",
+             str(Path(__file__).with_name("check_tool_snapshot.py"))],
+            cwd=temporary, check=False,
+        )
+        if result.returncode:
+            raise UpdateError("staged synthetic snapshot --check failed; no promotion attempted")
+        print("Staged synthetic snapshot --check passed (mock HTTP; no live Jira or state writes).")
 
 
 def main(argv):
@@ -123,6 +135,7 @@ def main(argv):
             if origin(staged_tools) != target_sha:
                 raise UpdateError("staged tool provenance did not match TARGET_SHA")
             check_commands(staged_bin)
+            check_snapshot(staged_tools)
 
         result = run(
             [
@@ -169,7 +182,8 @@ def main(argv):
                     "candidate verification failed; restored and verified PREVIOUS_SHA"
                 ) from validation_error
             print(
-                f"Installed and verified {target_sha}; both commands pass --help and synthetic --check."
+                f"Installed and verified {target_sha}; both commands pass --help and missing-token --check smoke; "
+                "staged synthetic snapshot --check passed (not live Jira acceptance)."
             )
             return 0
 
