@@ -9,7 +9,7 @@ import httpx
 
 from jira_overview.core import Jira
 from jira_overview.session import ReviewSession
-from test_overview import Server, TOKEN
+from support.jira import Server, TOKEN
 
 
 class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
@@ -453,6 +453,39 @@ class ReviewSessionTests(unittest.IsolatedAsyncioTestCase):
         assert session.view.refresh_error is not None
         self.assertIn("429", session.view.refresh_error)
         await session.aclose()
+
+    async def test_reentrant_open_notification_keeps_one_open_and_allows_refresh(self):
+        reentered = False
+        session = None
+
+        def changed():
+            nonlocal reentered
+            if session is None:
+                return
+            view = session.view
+            if view.snapshot is not None:
+                self.assertEqual(tuple(item.issue for item in view.items), view.snapshot.issues)
+            if view.opening and not reentered:
+                reentered = True
+                session.open(view.items[0].issue)
+                session.refresh()
+                self.assertTrue(session.view.opening)
+                self.assertTrue(session.view.refreshing)
+
+        session = self.make_session(changed)
+        self.addAsyncCleanup(session.aclose)
+        await session.start()
+        await self.wait_until(lambda: not session.view.refreshing)
+        self.browser_gate = asyncio.Event()
+        session.open(session.view.items[0].issue)
+        await asyncio.wait_for(self.browser_entered.wait(), 2)
+        await self.wait_until(lambda: not session.view.refreshing)
+        self.assertTrue(session.view.opening)
+        self.assertEqual(len(self.opened), 1)
+        self.assertEqual(len([r for r in self.server.requests if r[1].endswith("/myself")]), 2)
+        self.browser_gate.set()
+        await self.wait_until(lambda: not session.view.opening)
+        self.assertTrue(reentered)
 
     async def test_close_cancels_browser_wait_before_releasing_profile(self):
         entered, cancelled = asyncio.Event(), asyncio.Event()

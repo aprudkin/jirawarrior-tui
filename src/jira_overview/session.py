@@ -53,7 +53,6 @@ class ReviewSession:
         self._jira, self._state_dir, self._interval = jira, state_dir, interval
         self._browser, self._on_change = browser, on_change
         self._state: State | None = None
-        self._snapshot: Snapshot | None = None
         self._view = ReviewView()
         self._refresh_task: asyncio.Task | None = None
         self._open_task: asyncio.Task | None = None
@@ -62,10 +61,7 @@ class ReviewSession:
         self._close_task: asyncio.Task | None = None
         self._recovery_task: asyncio.Task | None = None
         self._conflict_path: Path | None = None
-        self._started = False
         self._closing = False
-        self._refresh_busy = False
-        self._open_busy = False
         self._jira_closed = False
         self._next_tick: float | None = None
         self._timer_changed = asyncio.Event()
@@ -81,7 +77,7 @@ class ReviewSession:
         if interval == self._interval:
             return
         self._interval = interval
-        if self._started:
+        if self._view.started:
             self._next_tick = time.monotonic() + interval
             self._timer_changed.set()
             self._replace_view(next_refresh_at=self._scheduled_refresh())
@@ -93,9 +89,8 @@ class ReviewSession:
     async def start(self) -> None:
         if self._closing:
             raise RuntimeError("session is closing")
-        if self._started:
+        if self._view.started:
             return
-        self._started = True
         self._next_tick = time.monotonic() + self._interval
         self._replace_view(started=True, next_refresh_at=self._scheduled_refresh())
         self.refresh()
@@ -103,19 +98,17 @@ class ReviewSession:
 
     def refresh(self) -> None:
         self._require_started()
-        if (self._closing or self._refresh_busy or self._view.recovery_busy
+        if (self._closing or self._view.refreshing or self._view.recovery_busy
                 or self._view.sprint_busy or self._view.sprint_choices
                 or self._view.lock_owner is not None):
             return
-        self._refresh_busy = True
         self._replace_view(refreshing=True)
         self._refresh_task = asyncio.create_task(self._refresh())
 
     def open(self, shown: Issue) -> None:
         self._require_started()
-        if self._closing or self._open_busy or self._view.sprint_busy or self._view.sprint_choices:
+        if self._closing or self._view.opening or self._view.sprint_busy or self._view.sprint_choices:
             return
-        self._open_busy = True
         self._replace_view(opening=True, open_notice=None, sprint_notice=None)
         self._open_task = asyncio.create_task(self._open(shown))
 
@@ -127,17 +120,18 @@ class ReviewSession:
         self._require_started()
         if self._closing or self._view.sprint_busy:
             return
-        if self._refresh_busy or self._open_busy:
+        if self._view.refreshing or self._view.opening:
             self._replace_view(sprint_notice="Дождитесь завершения текущей операции и повторите A.")
             return
-        if (self._snapshot is None or self._state is None or not shown.tracked
-                or not any(item.id == shown.id for item in self._snapshot.issues)):
+        snapshot = self._view.snapshot
+        if (snapshot is None or self._state is None or not shown.tracked
+                or not any(item.id == shown.id for item in snapshot.issues)):
             self._replace_view(sprint_notice="Сначала выберите задачу в успешно загруженном обзоре.")
             return
         if shown.is_epic or shown.is_subtask:
             self._replace_view(sprint_notice="Эпики и подзадачи нельзя добавлять в спринт.")
             return
-        choices = self._snapshot.active_sprints
+        choices = snapshot.active_sprints
         if not choices:
             self._replace_view(sprint_notice="В полном обзоре нет активных спринтов.",
                                sprint_issue=None, sprint_choices=())
@@ -163,7 +157,6 @@ class ReviewSession:
                 return
             self._replace_view(sprint_notice=("Добавление в спринт подтверждено Jira." if added else
                                               "Задача уже в выбранном спринте; запись не требуется."))
-            self._refresh_busy = True
             self._replace_view(refreshing=True)
             await self._refresh()
         except OverviewError as exc:
@@ -176,7 +169,7 @@ class ReviewSession:
 
     def find_lock_owner(self) -> None:
         self._require_started()
-        if (self._closing or self._refresh_busy or self._view.recovery_busy
+        if (self._closing or self._view.refreshing or self._view.recovery_busy
                 or not self._view.profile_busy):
             return
         self._replace_view(recovery_busy=True, lock_owner=None, recovery_notice="Поиск другого экземпляра…")
@@ -188,7 +181,7 @@ class ReviewSession:
 
     def stop_lock_owner(self, owner: LockOwner) -> None:
         self._require_started()
-        if (self._closing or self._refresh_busy or self._view.recovery_busy or not self._view.profile_busy
+        if (self._closing or self._view.refreshing or self._view.recovery_busy or not self._view.profile_busy
                 or owner != self._view.lock_owner):
             return
         self._replace_view(recovery_busy=True, lock_owner=None,
@@ -263,10 +256,9 @@ class ReviewSession:
             self._state.ingest(snapshot)
             if self._closing:
                 return
-            self._snapshot = snapshot
             updated = datetime.now().astimezone().strftime("%H:%M:%S %Z")
             self._conflict_path = None
-            self._replace_view(snapshot=snapshot, items=self._items(), display_name=snapshot.display_name,
+            self._replace_view(snapshot=snapshot, items=self._items(snapshot), display_name=snapshot.display_name,
                                user_id=snapshot.user_id, updated_at=updated, refresh_error=None,
                                profile_busy=False, lock_owner=None, recovery_notice=None)
         except OverviewError as exc:
@@ -277,7 +269,6 @@ class ReviewSession:
                                    lock_owner=None)
         finally:
             self._refresh_task = None
-            self._refresh_busy = False
             if not self._closing:
                 self._replace_view(refreshing=False, next_refresh_at=self._scheduled_refresh())
 
@@ -290,20 +281,19 @@ class ReviewSession:
             if self._state is None:
                 raise OverviewError("Локальное состояние недоступно; отметки НЕ сохранены.")
             self._state.acknowledge(shown)
-            self._replace_view(items=self._items())
+            self._replace_view(items=self._items(self._view.snapshot))
         except OverviewError as exc:
             if not self._closing:
                 self._replace_view(open_notice=str(exc))
         finally:
             self._open_task = None
-            self._open_busy = False
             if not self._closing:
                 self._replace_view(opening=False)
 
-    def _items(self) -> tuple[ReviewItem, ...]:
-        if self._snapshot is None or self._state is None:
+    def _items(self, snapshot: Snapshot | None) -> tuple[ReviewItem, ...]:
+        if snapshot is None or self._state is None:
             return ()
-        return tuple(ReviewItem(issue, *self._state.markers(issue)) for issue in self._snapshot.issues)
+        return tuple(ReviewItem(issue, *self._state.markers(issue)) for issue in snapshot.issues)
 
     def _replace_view(self, **changes) -> None:
         self._view = replace(self._view, **changes)
@@ -311,7 +301,7 @@ class ReviewSession:
             self._on_change()
 
     def _require_started(self) -> None:
-        if not self._started:
+        if not self._view.started:
             raise RuntimeError("session has not started")
 
     async def aclose(self) -> None:

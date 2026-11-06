@@ -1,11 +1,6 @@
 """Own the overview's tables, ordering, selection, and presentation geometry."""
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import datetime, timedelta, timezone
-import re
-
-from rich.text import Text
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -16,96 +11,7 @@ from textual.widgets import DataTable, Input, Static
 
 from .core import Issue
 from .session import ReviewItem
-
-
-_COLUMN_LABELS = ("Тикет", "Название", "Статус", "Обновлено")
-_SORT_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
-_STATUS_PRIORITIES = (
-    frozenset(("in progress", "в работе")),
-    frozenset(("to do", "к выполнению")),
-    frozenset(("hold", "on hold")),
-    frozenset(("backlog", "бэклог")),
-)
-
-
-def _sprint_label(name: str) -> str:
-    match = re.fullmatch(r".+-[0-9]{4}-W([0-9]{1,2}) \(#[0-9]+\)", name)
-    if match and 1 <= (week := int(match[1])) <= 53:
-        return f"{week}-я неделя"
-    return name
-
-
-def _status_sort_key(status: str) -> tuple[int, str, str]:
-    folded = status.casefold()
-    rank = next((index for index, names in enumerate(_STATUS_PRIORITIES)
-                 if folded in names), len(_STATUS_PRIORITIES))
-    return rank, folded, status
-
-
-def _item_sort_key(item: ReviewItem, *, open_first=False):
-    updated = item.issue.updated
-    return (0 if item.new else 1 if item.unread_comments else 2,
-            0 if open_first and item.issue.status.casefold() == "open" else 1,
-            _status_sort_key(item.issue.status), updated is None,
-            _SORT_EPOCH - updated if updated is not None else timedelta(), item.issue.key)
-
-
-def _family_rows(items: list[ReviewItem], by_key: dict[str, ReviewItem], *,
-                 depth: int = 0, open_first: bool = False) -> list[tuple[ReviewItem, int]]:
-    """Order blocks by the parent, retaining only matching own children."""
-    selected = {item.issue.key: item for item in items}
-    roots: dict[str, ReviewItem] = {}
-    children: dict[str, list[ReviewItem]] = {}
-    for item in items:
-        parent = by_key.get(item.issue.parent_key) if item.issue.parent_key is not None else None
-        if parent is None or parent.issue.is_epic:
-            roots[item.issue.key] = item
-            continue
-        key = parent.issue.key
-        if key not in roots:
-            # A parent outside this area/filter is context, even if tracked in
-            # another area. Capture that fact in the activated immutable Issue.
-            roots[key] = selected.get(key) or ReviewItem(
-                replace(parent.issue, tracked=False), False, 0)
-        children.setdefault(key, []).append(item)
-    rows = []
-    for root in sorted(roots.values(), key=lambda item: _item_sort_key(item, open_first=open_first)):
-        rows.append((root, depth))
-        rows.extend((child, depth + 1) for child in sorted(
-            children.get(root.issue.key, ()), key=lambda item: _item_sort_key(item, open_first=open_first)))
-    return rows
-
-
-def _tree_prefixes(rows: list[tuple[ReviewItem, int]]) -> list[str]:
-    """Connect only the visible siblings, resetting at each top-level root."""
-    prefixes = []
-    later_siblings: set[int] = set()
-    for _, depth in reversed(rows):
-        later_siblings = {level for level in later_siblings if level <= depth}
-        if depth == 0:
-            prefixes.append("")
-        else:
-            ancestors = "".join("│  " if level in later_siblings else "   "
-                                for level in range(1, depth))
-            prefixes.append(ancestors + ("├─ " if depth in later_siblings else "└─ "))
-        later_siblings.add(depth)
-    return list(reversed(prefixes))
-
-
-def _issue_cells(item: ReviewItem, *, epic_count: int | None = None,
-                 prefix: str = "") -> tuple[Text, Text, Text, Text]:
-    issue = item.issue
-    emphasis = "bold" if issue.is_epic or item.new or item.unread_comments else ""
-    key = Text()
-    key.append(prefix, style="dim")
-    key.append(issue.key, style="bold cyan" if issue.is_epic else emphasis)
-    if item.new:
-        key.append(" NEW", style="bold green")
-    if item.unread_comments:
-        key.append(f" Comment +{item.unread_comments}", style="bold yellow")
-    summary = issue.summary + (f" ({epic_count})" if epic_count is not None else "")
-    updated = issue.updated.astimezone().strftime("%d.%m.%Y") if issue.updated is not None else "—"
-    return key, Text(summary, style=emphasis), Text(issue.status), Text(updated)
+from .view_plan import _COLUMN_LABELS, build_plan
 
 
 class IssueActivated(Message):
@@ -279,10 +185,8 @@ class OverviewPresentation(Vertical):
         self._focus_tasks()
 
     def _focus_tasks(self) -> None:
-        tables = self._visible_tables()
-        target = self._filter_table
-        if target not in tables or not target.row_count:
-            target = next((table for table in tables if table.row_count), tables[0])
+        target = self._preferred_table(None, self._filter_table, fallback=True)
+        assert target is not None
         target.focus()
         self.call_after_refresh(self.fit_sprint_area)
 
@@ -317,13 +221,8 @@ class OverviewPresentation(Vertical):
         for area in ("sprint", "other", "epic"):
             self.query_one(f"#{area}-area").display = (area == "epic") == self.epic_mode
         self._paint(selected)
-        tables = self._visible_tables()
-        target = next((table for table in tables
-                       if selected in table.shown and table.shown[selected].tracked), None)
-        if target is None:
-            target = next((table for table in tables if selected in table.shown), None)
-        if target is None:
-            target = next((table for table in tables if table.row_count), tables[0])
+        target = self._preferred_table(selected, fallback=True)
+        assert target is not None
         target.focus()
         self.call_after_refresh(self.fit_sprint_area)
 
@@ -345,17 +244,10 @@ class OverviewPresentation(Vertical):
         for table in self.query(IssueTable):
             table.can_focus = True
         self.query_one("#summary-filter", Input).can_focus = True
-        if selected is not None:
-            tables = self._visible_tables()
-            target_table = target if (isinstance(target, IssueTable) and target in tables
-                                      and selected in target.shown) else next(
-                (table for table in tables if selected in table.shown and table.shown[selected].tracked),
-                next((table for table in tables if selected in table.shown), None))
-            if target_table is not None:
-                self._move_to(target_table, selected)
-                target = target_table
-        if isinstance(target, IssueTable) and not target.row_count:
-            target = next((table for table in self._visible_tables() if table.row_count), target)
+        if isinstance(target, IssueTable):
+            target = self._preferred_table(selected, target, fallback=True)
+            if target is not None and selected is not None:
+                self._move_to(target, selected)
         if target is not None:
             target.focus()
         self._suspend_selected = None
@@ -365,6 +257,19 @@ class OverviewPresentation(Vertical):
     def _visible_tables(self) -> list[IssueTable]:
         return ([self.query_one("#epic", IssueTable)] if self.epic_mode else
                 [self.query_one("#sprint", IssueTable), self.query_one("#other", IssueTable)])
+
+    def _preferred_table(self, selected: str | None, preferred=None, *,
+                         fallback: bool = False) -> IssueTable | None:
+        tables = self._visible_tables()
+        candidates = [table for table in tables if selected in table.shown]
+        if preferred in candidates:
+            return preferred
+        if candidates and selected is not None:
+            return next((table for table in candidates if table.shown[selected].tracked), candidates[0])
+        if fallback:
+            return (preferred if preferred in tables and preferred.row_count else
+                    next((table for table in tables if table.row_count), tables[0]))
+        return None
 
     def _selected_key(self) -> str | None:
         focused = self.app.focused
@@ -416,85 +321,26 @@ class OverviewPresentation(Vertical):
             return
         if selected is None:
             selected = self._selected_key()
-        tables = self._visible_tables()
-        matching_items = tuple(item for item in self._items
-                               if self._filter_query in item.issue.summary.casefold())
-        by_key = {item.issue.key: item for item in self._items}
-        plans: dict[IssueTable, list[tuple[ReviewItem, int]]] = {}
-        epic_counts: dict[str, int] = {}
-        for table in tables:
-            if table.id == "epic":
-                epics = sorted((item for item in self._items if item.issue.is_epic),
-                               key=lambda item: item.issue.key)
-                children = {item.issue.key: [] for item in epics}
-                for item in matching_items:
-                    if item.issue.tracked and not item.issue.is_epic and item.issue.epic_key in children:
-                        children[item.issue.epic_key].append(item)
-                rows: list[tuple[ReviewItem, int]] = []
-                for epic in epics:
-                    tickets = children[epic.issue.key]
-                    if not tickets and self._filter_query not in epic.issue.summary.casefold():
-                        continue
-                    epic_counts[epic.issue.key] = len(tickets)
-                    rows.append((epic, 0))
-                    rows.extend(_family_rows(tickets, by_key, depth=1))
-            else:
-                tickets = [item for item in matching_items
-                           if item.issue.tracked and not item.issue.is_epic
-                           and bool(item.issue.sprints) == (table.id == "sprint")]
-                rows = _family_rows(tickets, by_key, open_first=table.id == "other")
-            plans[table] = rows
-        # Measure the final tree, including contextual copies and all connectors.
-        cells_by_table = {
-            table: [_issue_cells(item, epic_count=epic_counts.get(item.issue.key), prefix=prefix)
-                    for (item, _), prefix in zip(rows, _tree_prefixes(rows))]
-            for table, rows in plans.items()
-        }
-        column_widths = [Text(label).cell_len for label in _COLUMN_LABELS]
-        for cells in cells_by_table.values():
-            for row in cells:
-                column_widths = [max(width, cell.cell_len) for width, cell in zip(column_widths, row)]
-        selected_tables = [table for table in tables
-                           if any(item.issue.id == selected for item, _ in plans[table])]
-        focus_target = self.app.focused if self.app.focused in selected_tables else next(
-            (table for table in selected_tables if any(item.issue.id == selected and item.issue.tracked
-                                                     for item, _ in plans[table])),
-            next(iter(selected_tables), None))
-        for table in tables:
+        plan = build_plan(self._items, epic_mode=self.epic_mode, query=self._filter_query)
+        for planned in plan.tables:
+            table = self.query_one("#" + planned.area, IssueTable)
             old_row = table.cursor_row
-            old_cursor_key = table._key_at(old_row) if table.row_count else None
-            old_key_for_table = old_cursor_key if old_cursor_key in table.shown else None
+            old_key = table._key_at(old_row) if table.row_count else None
             old_issue_index = sum(table._key_at(row) in table.shown for row in range(old_row))
-            issues = [item.issue for item, _ in plans[table]]
-            own_issues = [issue for issue in issues if issue.tracked and not issue.is_epic]
             table.clear(columns=True)
-            for label, width in zip(_COLUMN_LABELS, column_widths):
+            for label, width in zip(_COLUMN_LABELS, plan.column_widths, strict=True):
                 table.add_column(label, width=width)
-            table.shown = {issue.id: issue for issue in issues}
-            names = [_sprint_label(name) for name in sorted({name for i in own_issues for name in i.sprints})]
-            if table.id == "epic":
-                heading = (f"Эпики ({len(epic_counts)}) — мои открытые тикеты ({sum(epic_counts.values())})" +
-                           ((" — нет совпадений" if self._filter_query else " — нет эпиков")
-                            if not epic_counts else ""))
-            else:
-                title = "Текущий спринт" if table.id == "sprint" else "Остальные мои задачи"
-                heading = (f"{title} ({len(own_issues)})" +
-                           (" — " + "; ".join(names) if names else "") +
-                           ((" — нет совпадений" if self._filter_query else " — нет задач")
-                            if not own_issues else ""))
-            self.query_one(f"#{table.id}-heading", Static).update(heading)
-            for issue, cells in zip(issues, cells_by_table[table]):
+            table.shown = {issue.id: issue for issue, _ in planned.rows}
+            self.query_one(f"#{planned.area}-heading", Static).update(planned.heading)
+            for issue, cells in planned.rows:
                 table.add_row(*cells, key=issue.id)
-            row_by_key = {table._key_at(row): row for row in range(table.row_count)
-                          if table._key_at(row) in table.shown}
-            target = selected if selected in row_by_key else old_key_for_table
+            row_by_key = {issue.id: row for row, (issue, _) in enumerate(planned.rows)}
+            target = selected if selected in row_by_key else old_key
             if target in row_by_key:
                 table.move_cursor(row=row_by_key[target])
-            elif row_by_key:
-                nearest_index = min(old_issue_index, len(row_by_key) - 1)
-                table.move_cursor(row=list(row_by_key.values())[nearest_index])
             else:
-                table.move_cursor(row=0)
-            if not self._suspended and table is focus_target:
-                table.focus()
+                table.move_cursor(row=min(old_issue_index, max(0, table.row_count - 1)))
+        focus_target = self._preferred_table(selected, self.app.focused)
+        if not self._suspended and focus_target is not None:
+            focus_target.focus()
         self.call_after_refresh(self.fit_sprint_area)

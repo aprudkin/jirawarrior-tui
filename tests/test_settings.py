@@ -14,7 +14,7 @@ from textual.widgets import Input, OptionList, Static
 from jira_overview.app import IssueTable, Overview
 from jira_overview.presentation import OverviewPresentation
 from jira_overview.core import Jira
-from test_overview import Server, TOKEN
+from support.jira import Server, TOKEN
 
 
 class SettingsTests(unittest.IsolatedAsyncioTestCase):

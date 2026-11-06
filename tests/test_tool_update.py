@@ -95,12 +95,20 @@ if args[:2] == ["tool", "install"]:
     env_dir = tool_dir / "jirawarrior-tui"
     metadata = env_dir / "lib/python3.12/site-packages/jirawarrior_tui-0.2.0.dist-info"
     metadata.mkdir(parents=True, exist_ok=True)
+    if os.environ.get("FAIL_PROMOTION_BEFORE") and sha != os.environ["OLD_SHA"]:
+        if os.environ.get("BREAK_PREVIOUS"):
+            (tool_dir / "bin/jw").write_text("#!/usr/bin/env python3\\nraise SystemExit(1)\\n")
+        raise SystemExit(23)
     (metadata / "direct_url.json").write_text(json.dumps({"url": "https://github.com/aprudkin/jirawarrior-tui.git", "vcs_info": {"vcs": "git", "commit_id": sha}}))
+    if os.environ.get("UNKNOWN_PROMOTION") and sha != os.environ["OLD_SHA"]:
+        (metadata / "direct_url.json").unlink()
+        raise SystemExit(23)
     bindir = tool_dir / "bin"
     bindir.mkdir(parents=True, exist_ok=True)
     for name in ("jirawarrior", "jw"):
         p = bindir / name
-        if os.environ.get("BAD_TARGET_HELP") and sha != os.environ["OLD_SHA"]:
+        if ((os.environ.get("BAD_TARGET_HELP") and sha != os.environ["OLD_SHA"])
+                or (os.environ.get("BAD_RECOVERY_HELP") and "--no-cache" in args)):
             p.write_text("#!/usr/bin/env python3\\nprint('broken')\\n")
         else:
             p.write_text("#!/usr/bin/env python3\\nimport json, os, sys\\nprint(json.dumps([os.getcwd(), sys.argv[1:]]), file=open(os.environ['COMMAND_CWDS'], 'a'))\\nif '--check' in sys.argv: print('Переменная окружения с токеном отсутствует', file=sys.stderr); raise SystemExit(1)\\nprint('usage: " + name + " [options]')\\n")
@@ -185,6 +193,38 @@ raise SystemExit(99)
         result = self.run_update(NEW, OLD, PARTIAL_PROMOTION="1", FAIL_RECOVERY="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("recovery did not confirm PREVIOUS_SHA", result.stderr)
+        self.assertNotIn("Installed and verified", result.stdout)
+
+    def test_failed_promotion_keeps_a_usable_previous_install_without_reinstall(self):
+        result = self.run_update(NEW, OLD, FAIL_PROMOTION_BEFORE="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("previous exact-SHA installation remains usable", result.stderr)
+        calls = [json.loads(line) for line in self.uv_log.read_text().splitlines()]
+        self.assertFalse(any("--no-cache" in call for call in calls))
+
+    def test_broken_previous_commands_are_restored_and_both_commands_rechecked(self):
+        result = self.run_update(NEW, OLD, FAIL_PROMOTION_BEFORE="1", BREAK_PREVIOUS="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("previous command was unusable, restored and verified PREVIOUS_SHA", result.stderr)
+        calls = [json.loads(line) for line in self.uv_log.read_text().splitlines()]
+        recovery = next(call for call in calls if "--no-cache" in call)
+        self.assertTrue(recovery[-1].endswith("@" + OLD))
+        commands = [json.loads(line)[1] for line in
+                    (self.root / "command-cwds.jsonl").read_text().splitlines()]
+        self.assertEqual([args[0] for args in commands[-4:]], ["--help", "--check"] * 2)
+
+    def test_unknown_partial_provenance_refuses_recovery(self):
+        result = self.run_update(NEW, OLD, UNKNOWN_PROMOTION="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unknown provenance; refusing to overwrite", result.stderr)
+        calls = [json.loads(line) for line in self.uv_log.read_text().splitlines()]
+        self.assertFalse(any("--no-cache" in call for call in calls))
+
+    def test_recovery_with_matching_sha_but_broken_commands_is_not_verified(self):
+        result = self.run_update(NEW, OLD, PARTIAL_PROMOTION="1", BAD_RECOVERY_HELP="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("installed command failed --help", result.stderr)
+        self.assertNotIn("recovered and verified", result.stderr)
         self.assertNotIn("Installed and verified", result.stdout)
 
     def test_foreign_provenance_is_not_overwritten(self):

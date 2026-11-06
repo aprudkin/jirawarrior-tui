@@ -10,7 +10,7 @@ from textual.widgets import Input, OptionList, Static
 from jira_overview.app import Overview
 from jira_overview.core import Jira
 from jira_overview.presentation import IssueTable, OverviewPresentation
-from test_overview import Server, TOKEN, comment, issue
+from support.jira import Server, TOKEN, comment, issue
 
 
 class FilterTests(unittest.IsolatedAsyncioTestCase):

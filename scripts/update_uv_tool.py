@@ -95,6 +95,20 @@ def check_snapshot(tool_dir):
         print("Staged synthetic snapshot --check passed (mock HTTP; no live Jira or state writes).")
 
 
+def restore_previous(uv, tool_dir, previous_sha, context):
+    recovery = run(
+        [uv, "tool", "install", "--force", "--no-cache", "--python", "3.12",
+         f"git+{REPOSITORY}@{previous_sha}"],
+        check=False,
+    )
+    recovered = origin(tool_dir)
+    if recovery.returncode or recovered != previous_sha:
+        raise UpdateError(
+            f"{context}: recovery did not confirm PREVIOUS_SHA (observed {recovered or 'unknown'}); inspect before retry"
+        )
+    check_commands(Path(run([uv, "tool", "dir", "--bin"]).stdout.strip()))
+
+
 def main(argv):
     if len(argv) != 2 or not all(SHA.fullmatch(value) for value in argv):
         print(
@@ -159,25 +173,7 @@ def main(argv):
             try:
                 check_commands(Path(run([uv, "tool", "dir", "--bin"]).stdout.strip()))
             except UpdateError as validation_error:
-                recovery = run(
-                    [
-                        uv,
-                        "tool",
-                        "install",
-                        "--force",
-                        "--no-cache",
-                        "--python",
-                        "3.12",
-                        source + previous_sha,
-                    ],
-                    check=False,
-                )
-                recovered = origin(tool_dir)
-                if recovery.returncode or recovered != previous_sha:
-                    raise UpdateError(
-                        f"candidate verification failed; recovery did not confirm PREVIOUS_SHA (observed {recovered or 'unknown'}); inspect before retry"
-                    ) from validation_error
-                check_commands(Path(run([uv, "tool", "dir", "--bin"]).stdout.strip()))
+                restore_previous(uv, tool_dir, previous_sha, "candidate verification failed")
                 raise UpdateError(
                     "candidate verification failed; restored and verified PREVIOUS_SHA"
                 ) from validation_error
@@ -201,25 +197,7 @@ def main(argv):
             try:
                 check_commands(Path(run([uv, "tool", "dir", "--bin"]).stdout.strip()))
             except UpdateError as command_error:
-                recovery = run(
-                    [
-                        uv,
-                        "tool",
-                        "install",
-                        "--force",
-                        "--no-cache",
-                        "--python",
-                        "3.12",
-                        source + previous_sha,
-                    ],
-                    check=False,
-                )
-                recovered = origin(tool_dir)
-                if recovery.returncode or recovered != previous_sha:
-                    raise UpdateError(
-                        f"previous SHA was unusable and recovery did not confirm PREVIOUS_SHA (observed {recovered or 'unknown'}); inspect before retry"
-                    ) from command_error
-                check_commands(Path(run([uv, "tool", "dir", "--bin"]).stdout.strip()))
+                restore_previous(uv, tool_dir, previous_sha, "previous SHA was unusable")
                 raise UpdateError(
                     "promotion failed; previous command was unusable, restored and verified PREVIOUS_SHA"
                 ) from command_error
@@ -227,25 +205,7 @@ def main(argv):
                 "promotion failed; confirmed the previous exact-SHA installation remains usable"
             )
 
-        recovery = run(
-            [
-                uv,
-                "tool",
-                "install",
-                "--force",
-                "--no-cache",
-                "--python",
-                "3.12",
-                source + previous_sha,
-            ],
-            check=False,
-        )
-        recovered = origin(tool_dir)
-        if recovery.returncode or recovered != previous_sha:
-            raise UpdateError(
-                f"recovery did not confirm PREVIOUS_SHA (observed {recovered or 'unknown'}); inspect before retry"
-            )
-        check_commands(Path(run([uv, "tool", "dir", "--bin"]).stdout.strip()))
+        restore_previous(uv, tool_dir, previous_sha, "promotion failed")
         raise UpdateError(
             "promotion failed; recovered and verified the previous exact-SHA installation"
         )

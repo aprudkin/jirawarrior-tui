@@ -12,7 +12,7 @@ from textual.widgets import Button, Static
 
 from jira_overview.app import Overview, OwnerConfirmation
 from jira_overview.core import Jira, OverviewError
-from test_overview import Server, TOKEN
+from support.jira import Server, TOKEN
 from test_processes import locked_process
 
 

@@ -17,7 +17,7 @@ from jira_overview.app import IssueTable, Overview
 from jira_overview.presentation import OverviewPresentation
 from jira_overview.core import Jira
 from jira_overview.themes import ADDITIONAL_THEMES
-from test_overview import Server, TOKEN, comment, issue
+from support.jira import Server, TOKEN, comment, issue
 
 
 # Independent expectations: names, mode and upstream base/text colours.

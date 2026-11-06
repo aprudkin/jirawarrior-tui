@@ -10,7 +10,7 @@ from jira_overview.app import Overview
 from jira_overview.core import Jira, Sprint
 from jira_overview.presentation import IssueTable
 from jira_overview.session import ReviewSession
-from test_overview import Server, TOKEN, comment, issue
+from support.jira import Server, TOKEN, comment, issue
 
 
 class SprintTests(unittest.IsolatedAsyncioTestCase):

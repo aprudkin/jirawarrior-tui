@@ -103,6 +103,31 @@ class Snapshot:
     active_sprints: tuple[Sprint, ...] = ()
 
 
+def _sprint_ids(values: object) -> list[str]:
+    """Server/DC memberships use objects or legacy GreenHopper strings."""
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        raise ValueError()
+    ids = []
+    for sprint in values:
+        if isinstance(sprint, dict):
+            sid = sprint["id"]
+            if type(sid) is int:
+                sid = str(sid)
+        elif isinstance(sprint, str):
+            match = re.search(r"\bid=(\d+)(?:,|\])", sprint)
+            if match is None:
+                raise ValueError()
+            sid = match[1]
+        else:
+            raise ValueError()
+        if not isinstance(sid, str) or not re.fullmatch(r"[0-9]+", sid):
+            raise ValueError()
+        ids.append(sid)
+    return ids
+
+
 class Jira:
     def __init__(self, url: str, token: str, *, allow_local_http: bool = False):
         try:
@@ -138,7 +163,7 @@ class Jira:
             except (ValueError, TypeError, OverflowError):
                 delay = 60
         delay = max(1, delay) if math.isfinite(delay) else 60
-        self.retry_at = time.monotonic() + delay
+        self.retry_at = max(self.retry_at, time.monotonic() + delay)
         raise RateLimited(delay)
 
     async def get(self, path: str, params: dict | None = None):
@@ -300,56 +325,28 @@ class Jira:
         # cache. Context has no comments, sprint memberships or local observation.
         for key in set(parents.values()) - memberships.keys():
             memberships[key] = None if is_epic(by_key[key]) else await parent_epic(by_key[key])
-        sprint_cache: dict[str, dict] = {}
+        comments_by_id = await self._load_comments([item["id"] for item in raw], user_id)
+        sprint_cache: dict[str, tuple[str, str]] = {}
         active_sprints: dict[str, Sprint] = {}
         issues = []
         for item in raw:
             data = item["fields"]
             sprints = []
-            values = data[sprint_field]
-            if values is None:
-                values = []
-            if not isinstance(values, list):
-                raise ValueError()
-            for sprint in values:
-                # Server/DC versions return either objects or legacy GreenHopper strings.
-                if isinstance(sprint, dict):
-                    sid = str(sprint["id"])
-                elif isinstance(sprint, str):
-                    match = re.search(r"\bid=(\d+)(?:,|\])", sprint)
-                    if not match:
-                        raise ValueError()
-                    sid = match[1]
-                else:
-                    raise ValueError()
-                if not sid.isdigit():
-                    raise ValueError()
+            for sid in _sprint_ids(data[sprint_field]):
                 if sid not in sprint_cache:
-                    sprint_cache[sid] = await self.get("/rest/agile/1.0/sprint/" + sid)
-                metadata = sprint_cache[sid]
-                state = required_text(metadata, "state")
-                if state not in ("active", "closed", "future"):
-                    raise ValueError()
+                    sprint_cache[sid] = await self._sprint_state(sid)
+                state, sprint_name = sprint_cache[sid]
                 if state == "active":
-                    sprint_name = plain(required_text(metadata, "name"))
                     active_sprints[sid] = Sprint(sid, sprint_name)
                     sprints.append(sprint_name + " (#" + sid + ")")
             issue_id = required_text(item, "id")
             key = required_text(item, "key")
             if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*-\d+", key) or not issue_id.isdigit():
                 raise ValueError()
-            comments = await self.pages("/rest/api/2/issue/" + quote(issue_id, safe="") + "/comment", "comments")
-            all_ids, foreign_ids = set(), set()
-            for comment in comments:
-                cid = required_text(comment, "id")
-                required_text(comment, "created")
-                author = identity(comment["author"])
-                all_ids.add(cid)
-                if author != user_id:
-                    foreign_ids.add(cid)
+            all_ids, foreign_ids = comments_by_id[issue_id]
             issues.append(Issue(issue_id, key, plain(required_text(data, "summary")),
                                 plain(required_text(data["status"], "name")),
-                                tuple(sorted(set(sprints))), frozenset(all_ids), frozenset(foreign_ids),
+                                tuple(sorted(set(sprints))), all_ids, foreign_ids,
                                 is_epic(item), memberships[key], updated=_updated_at(data.get("updated")),
                                 is_subtask=key in parents, parent_key=parents.get(key)))
         own_keys = {item["key"] for item in raw}
@@ -367,6 +364,35 @@ class Jira:
                         tuple(sorted(issues, key=lambda i: i.key)),
                         tuple(active_sprints[sid] for sid in sorted(active_sprints)))
 
+    async def _load_comments(self, issue_ids: list[str], user_id: str
+                             ) -> dict[str, tuple[frozenset[str], frozenset[str]]]:
+        pending = iter(issue_ids)
+        result = {}
+
+        async def load():
+            for issue_id in pending:
+                comments = await self.pages(
+                    "/rest/api/2/issue/" + quote(issue_id, safe="") + "/comment", "comments")
+                all_ids, foreign_ids = set(), set()
+                for comment in comments:
+                    cid = required_text(comment, "id")
+                    required_text(comment, "created")
+                    author = identity(comment["author"])
+                    all_ids.add(cid)
+                    if author != user_id:
+                        foreign_ids.add(cid)
+                result[issue_id] = frozenset(all_ids), frozenset(foreign_ids)
+
+        tasks = [asyncio.create_task(load()) for _ in range(min(4, len(issue_ids)))]
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            # No reads may outlive a failed or cancelled snapshot.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        return result
+
     async def _sprint_issue_state(self, issue: Issue) -> list[tuple[str, str]]:
         # The standard custom field includes ALL active/future memberships,
         # unlike Agile's single `sprint` object. Never infer backlog from absence.
@@ -381,22 +407,8 @@ class Jira:
                 raise OverviewError("Эпики и подзадачи нельзя добавлять в спринт.")
             if fields.get("parent") is not None:
                 raise OverviewError("Эпики и подзадачи нельзя добавлять в спринт.")
-            values = fields[sprint_field]
-            if values is None:
-                values = []
-            if not isinstance(values, list):
-                raise ValueError()
             memberships = []
-            for sprint in values:
-                if isinstance(sprint, dict):
-                    sid = str(sprint["id"])
-                elif isinstance(sprint, str):
-                    match = re.search(r"\bid=(\d+)(?:,|\])", sprint)
-                    if match is None:
-                        raise ValueError()
-                    sid = match[1]
-                else:
-                    raise ValueError()
+            for sid in _sprint_ids(fields[sprint_field]):
                 state, _ = await self._sprint_state(sid)
                 memberships.append((sid, state))
             return memberships
